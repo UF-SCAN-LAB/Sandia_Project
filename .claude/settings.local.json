@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/patri/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*)",
+      "Read(//c/Users/patri/anaconda3/**)",
+      "Read(//c/Users/patri/miniconda3/**)",
+      "Read(//c/Users/patri/**)",
+      "Bash(timeout 5 python -m xrayrecon.main)",
+      "Bash(py --version)",
+      "Bash(where python3:*)",
+      "Bash(where py:*)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" branch -a)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" log --oneline -15)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" log QoL_development --oneline -20)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" show --stat 6c07a02)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" log --oneline -5 feature/gerber-material-parsing)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" log main..QoL_development --oneline)",
+      "Bash(git -C \"c:/Users/patri/git/sandia-2025/xray-recon\" show 61b74db --stat)",
+      "Bash(python3 -c \"import qtextras; help\\(qtextras.ButtonCollection\\)\")",
+      "Bash(python -c \"import qtextras; print\\(dir\\(qtextras\\)\\)\")",
+      "Bash(find /c/Users/patri/git/sandia-2025 -name *.py -path */qtextras/*)",
+      "Bash(/c/Users/patri/anaconda3/envs/pytorch/python.exe -c \"import pyqtgraph as pg; print\\(hasattr\\(pg, ''Vector''\\)\\); from pyqtgraph import Vector; print\\(''ok''\\)\")"
+    ]
+  }
+}
