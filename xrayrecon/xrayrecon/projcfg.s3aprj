@@ -1,0 +1,15 @@
+images:
+- images
+annotations:
+- annotations
+
+table-config:
+  fields:
+    Class:
+      value: Unassigned
+      type: list
+      limits:
+      - Unassigned
+      - Via
+      - Through-Hole
+      - Connection
