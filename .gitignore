@@ -2,3 +2,5 @@ kicad
 xray-recon
 xray-recon
 kicad
+__pycache__/
+*.py[cod]
