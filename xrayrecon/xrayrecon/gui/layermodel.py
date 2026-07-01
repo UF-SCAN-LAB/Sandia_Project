@@ -31,6 +31,7 @@ class LayerModel(QtCore.QObject):
         if applyCubeCorrections:
             dataCube = performAllCorrections(dataCube)
         self.dataCube = self.forceDepthToLastAx(dataCube)
+        self.rgbaCube: np.ndarray | None = None  # (H, W, Z, 4) uint8, or None for grayscale
         self.metricInfo: QtWidgets.QWidget | None = self.NO_METRIC
 
         if layerInfo is None:
@@ -60,7 +61,13 @@ class LayerModel(QtCore.QObject):
             return
         for k, v in zip(axs + [missingAx], range(3)):
             self.axMapping[k] = v
-        self.setCube(self.dataCube.transpose(axNums))
+        new_cube = self.dataCube.transpose(axNums)
+        if self.rgbaCube is not None:
+            # Keep rgbaCube in its original (H, W, Z, 4) orientation so that
+            # layerDf Z-slices always reference the original depth axis correctly.
+            self.setRGBACube(new_cube, self.rgbaCube)
+        else:
+            self.setCube(new_cube)
 
     def parseIndSliceCsv(self, csvFname: Union[Path, str]):
         layerDf = pd.read_csv(csvFname)
@@ -101,7 +108,30 @@ class LayerModel(QtCore.QObject):
         return layerInfo
 
     def setCube(self, dataCube: np.ndarray):
+        self.rgbaCube = None
+        self._resetLayerInfoIfDepthChanged(dataCube)
         self.dataCube = dataCube
+        self.sigCubeChanged.emit()
+
+    def _resetLayerInfoIfDepthChanged(self, newCube: np.ndarray):
+        """Recompute layerDf/tblModel when the new cube's Z-depth differs from
+        the current one. Without this, stale per-layer slice ranges from a
+        differently-sized cube index out of bounds in applyProcess/LayerView
+        (e.g. loading a 34-slice volume after a 256-slice one)."""
+        oldDepth = self.dataCube.shape[2] if self.dataCube is not None else None
+        newDepth = newCube.shape[2] if newCube is not None else None
+        if newDepth is None or newDepth == oldDepth:
+            return
+        self.tblModel.removeLayers()
+        layerInfo = self.getAutoLayerInfo(newCube, returnMetric=True)
+        self.tblModel.addDfRows(layerInfo)
+        self.layerDf = self.tblModel.dataDf
+
+    def setRGBACube(self, dataCube: np.ndarray, rgbaCube: np.ndarray):
+        """Set grayscale + RGBA cubes atomically so resetItems sees both."""
+        self._resetLayerInfoIfDepthChanged(dataCube)
+        self.dataCube = dataCube
+        self.rgbaCube = rgbaCube
         self.sigCubeChanged.emit()
 
     def applyProcess(
@@ -110,9 +140,20 @@ class LayerModel(QtCore.QObject):
         process: Callable[[np.ndarray], np.ndarray] = None,
         emit=True,
     ):
-        if process is None:
-            process = lambda _img: np.mean(_img, 2)
-        img = process(self.dataCube[:, :, self.layerDf.loc[layerIdx, "Slices"]])
+        slices = self.layerDf.loc[layerIdx, "Slices"]
+        if self.rgbaCube is not None:
+            h, w = self.rgbaCube.shape[:2]
+            if len(slices) == 0:
+                img = np.zeros((h, w, 4), dtype=np.uint8)
+            else:
+                # Middle-slice projection: O(1) memory, shows material cross-section
+                # at the representative depth of each layer.
+                mid = slices[len(slices) // 2]
+                img = self.rgbaCube[:, :, mid, :].copy()
+        else:
+            if process is None:
+                process = lambda _img: np.mean(_img, 2)
+            img = process(self.dataCube[:, :, slices])
         if emit:
             self.sigLayerUpdated.emit(layerIdx, img)
         return img

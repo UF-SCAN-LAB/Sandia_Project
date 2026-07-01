@@ -4,6 +4,12 @@ import glob
 import numpy as np
 from PIL import Image
 
+try:
+    import tifffile as _tifffile
+    _HAS_TIFFFILE = True
+except ImportError:
+    _HAS_TIFFFILE = False
+
 def load_data(path: str) -> np.ndarray:
     """
     Load 3D data from a file or a directory of images.
@@ -51,13 +57,10 @@ def _load_from_directory(path: str) -> np.ndarray:
     
     images = []
     for f in files:
-        img_obj = Image.open(f)
-        # Convert to grayscale if RGB? Usually reconstruction data is single channel.
-        # Let's preserve original mode but if RGB convert to grayscale? 
-        # The user said "convert it into the appropriate numpy array stack".
-        # X-ray is typically density/intensity, so 'L' or 'F' (float).
-        # Safe bet is to convert to numpy and see.
-        data = np.array(img_obj)
+        if _HAS_TIFFFILE and f.lower().endswith((".tif", ".tiff")):
+            data = _tifffile.imread(f)
+        else:
+            data = np.array(Image.open(f))
         images.append(data)
         
     stack = np.stack(images, axis=0) # Z, H, W

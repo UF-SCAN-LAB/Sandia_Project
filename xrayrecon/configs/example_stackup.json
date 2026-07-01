@@ -1,0 +1,28 @@
+{
+  "layers": [
+    {
+      "file": "RoyalBlue54L-NFC-Antenna-CuTop.gbr",
+      "name": "Top Cu",
+      "thickness": 0.035,
+      "gap": 1.6,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [255, 140, 0, 220]
+    },
+    {
+      "file": "RoyalBlue54L-NFC-Antenna-CuBottom.gbr",
+      "name": "Bottom Cu",
+      "thickness": 0.035,
+      "gap": 0.0,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [50, 160, 255, 220]
+    }
+  ],
+  "gerber_dir": "E:\\git\\kicad\\demos\\royalblue54L_feather\\nfc_antenna\\RoyalBlue54L-NFC-Antenna\\jlcpcb\\gerber",
+  "dpi": 300,
+  "resolution_xy": 0.1,
+  "resolution_z": 0.05,
+  "substrate_material": "FR4",
+  "default_gap_slices": 20
+}

@@ -21,9 +21,11 @@ from s3a.processing import ImagePipeline
 
 from xrayrecon.cubecorrections.rotation import RotateWindow
 
-from .helpers import FRPgParamDelegate
+from .helpers import FRPgParamDelegate, phantomSpheres
 from .layermodel import LayerModel
 from .layerview import LayerView
+from .am_plot_window import AMPlotWindow, MaterialLegendWidget
+from .stackup_editor import StackupEditorWindow
 from .view3d import PCBViewer3D
 
 # Gerber Integration Imports
@@ -32,6 +34,11 @@ from ..gerber_utils import GerberLayer
 from ..voxelizer import Voxelizer
 from ..materials import MATERIALS_DB, get_material
 from ..stackup import StackupConfig
+from ..multimaterial import MaterialEntry, MultiMaterialConfig
+from ..io_spectral import load_ed_data
+from ..material_seg import normalize_volume, voxel_to_material_id, label_map_to_rgba
+from ..ct_simulation import simulate_ct_volume
+from ..alvarez_macovski import simulate_am_volume, colorize_volume, colorize_by_material
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -72,12 +79,19 @@ class MainWin(QtWidgets.QMainWindow):
         # Reassign dataCube in case it was modified
         self.dataCube = self.model.dataCube
         self.viewer = LayerView(self.model)
-        self.viewer_3d = PCBViewer3D(dataCube)
+        # Left pane: real CT / multi-material data. Right pane: Gerber-derived model.
+        self.viewer_3d_left = PCBViewer3D(dataCube)
+        self.viewer_3d_right = PCBViewer3D()
         self._gerber_layer_blocks = []
         self._gerber_layer_legend = []
         self._gerber_gap_slices = 20
+        self._gerber_intensity_hwz: np.ndarray | None = None
+        self._current_rgba_base_left: np.ndarray | None = None  # None = grayscale mode
+        self._current_rgba_base_right: np.ndarray | None = None
+        self._stackupEditor: StackupEditorWindow | None = None
+        self._am_result: dict | None = None
         # self.model.sigCubeChanged.connect(
-        #     lambda: self.viewer_3d.setDataCube(self.model.dataCube)
+        #     lambda: self.viewer_3d_left.setDataCube(self.model.dataCube)
         # )
 
         pgDict = dict(type="list", values={"True": True, "False": False})
@@ -134,9 +148,107 @@ class MainWin(QtWidgets.QMainWindow):
             self.loadGerberStackup, name="Load Gerber Stackup"
         )
         self.toolsEditor.registerFunction(
+            self.editGerberStackup, name="Edit Gerber Stackup"
+        )
+        self.toolsEditor.registerFunction(
             self.showGerberColorView, name="Show Gerber Color 3D"
         )
+        self.toolsEditor.registerFunction(
+            self.loadMultiMaterial, name="Load Multi-Material Config"
+        )
+        self.toolsEditor.registerFunction(self.loadEDData, name="Load ED Data")
+        self.toolsEditor.registerFunction(self.loadPhantomDemo, name="Load Phantom Demo")
         self._buildUi()
+
+    def _build3DPane(
+        self,
+        viewer: PCBViewer3D,
+        suffix: str,
+        onControlChanged: Callable,
+        extra_widgets: list | None = None,
+    ) -> QtWidgets.QWidget:
+        """Build a camera/grid/threshold/opacity control stack for *viewer*.
+
+        Stores the created widgets as self.<name>_<suffix> (e.g. threshSlider_left)
+        so per-pane state can be looked up by other methods.
+        """
+        cameraOpts = [OptionsDict(n, pType="action") for n in ["Top", "Front", "Side", "Reset"]]
+        cameraFns = [
+            viewer.setCameraTop,
+            viewer.setCameraFront,
+            viewer.setCameraSide,
+            viewer.resetCamera,
+        ]
+        cameraCtrl = ButtonCollection(
+            None, "Camera", cameraOpts, cameraFns, exclusive=False, asToolButton=False
+        )
+        setattr(self, f"cameraCtrl_{suffix}", cameraCtrl)
+
+        gridToggleBtn = QtWidgets.QPushButton("Grid")
+        gridToggleBtn.setCheckable(True)
+        gridToggleBtn.setChecked(True)
+        axisToggleBtn = QtWidgets.QPushButton("Axis")
+        axisToggleBtn.setCheckable(True)
+        axisToggleBtn.setChecked(True)
+        gridToggleBtn.toggled.connect(viewer.setGridVisible)
+        axisToggleBtn.toggled.connect(viewer.setAxisVisible)
+        for btn in [gridToggleBtn, axisToggleBtn]:
+            btn.setMaximumHeight(22)
+        setattr(self, f"gridToggleBtn_{suffix}", gridToggleBtn)
+        setattr(self, f"axisToggleBtn_{suffix}", axisToggleBtn)
+        viewToggleRow = QtWidgets.QWidget()
+        viewToggleLayout = QtWidgets.QHBoxLayout(viewToggleRow)
+        viewToggleLayout.setContentsMargins(0, 0, 0, 0)
+        viewToggleLayout.addWidget(gridToggleBtn)
+        viewToggleLayout.addWidget(axisToggleBtn)
+
+        threshSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        threshSlider.setRange(0, 50)
+        threshSlider.setValue(10)
+        threshSlider.setMaximumHeight(18)
+        threshSlider.setToolTip("3D threshold: voxels below this intensity are hidden (0–50%)")
+
+        opacitySlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        opacitySlider.setRange(1, 10)
+        opacitySlider.setValue(4)
+        opacitySlider.setMaximumHeight(18)
+        opacitySlider.setToolTip("3D opacity exponent: higher = more transparent mid-range voxels")
+
+        threshRow = QtWidgets.QWidget()
+        threshLayout = QtWidgets.QHBoxLayout(threshRow)
+        threshLayout.setContentsMargins(0, 0, 0, 0)
+        threshLayout.addWidget(QtWidgets.QLabel("3D Thresh:"))
+        threshLayout.addWidget(threshSlider)
+
+        opacRow = QtWidgets.QWidget()
+        opacLayout = QtWidgets.QHBoxLayout(opacRow)
+        opacLayout.setContentsMargins(0, 0, 0, 0)
+        opacLayout.addWidget(QtWidgets.QLabel("3D Opacity:"))
+        opacLayout.addWidget(opacitySlider)
+
+        threshSlider.valueChanged.connect(onControlChanged)
+        opacitySlider.valueChanged.connect(onControlChanged)
+        setattr(self, f"threshSlider_{suffix}", threshSlider)
+        setattr(self, f"opacitySlider_{suffix}", opacitySlider)
+
+        controlsWidget = QtWidgets.QWidget()
+        ccl = QtWidgets.QVBoxLayout(controlsWidget)
+        ccl.setContentsMargins(0, 0, 0, 0)
+        ccl.setSpacing(2)
+        ccl.addWidget(cameraCtrl)
+        ccl.addWidget(viewToggleRow)
+        ccl.addWidget(threshRow)
+        ccl.addWidget(opacRow)
+        for widget in extra_widgets or []:
+            ccl.addWidget(widget)
+        ccl.addStretch()
+
+        paneSplitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        paneSplitter.addWidget(controlsWidget)
+        paneSplitter.addWidget(viewer)
+        paneSplitter.setStretchFactor(0, 0)
+        paneSplitter.setStretchFactor(1, 1)
+        return paneSplitter
 
     def _buildUi(self):
         # --- Menu bar ---
@@ -183,76 +295,50 @@ class MainWin(QtWidgets.QMainWindow):
         ll.addWidget(self.layerFilterEdit)
         ll.addWidget(self.tbl)
 
-        # --- Center panel: camera buttons + view toggles + 3D viewer ---
-        cameraOpts = [OptionsDict(n, pType="action") for n in ["Top", "Front", "Side", "Reset"]]
-        cameraFns = [
-            self.viewer_3d.setCameraTop,
-            self.viewer_3d.setCameraFront,
-            self.viewer_3d.setCameraSide,
-            self.viewer_3d.resetCamera,
-        ]
-        self.cameraCtrl = ButtonCollection(
-            None, "Camera", cameraOpts, cameraFns, exclusive=False, asToolButton=False
-        )
-
-        self.gridToggleBtn = QtWidgets.QPushButton("Grid")
-        self.gridToggleBtn.setCheckable(True)
-        self.gridToggleBtn.setChecked(True)
-        self.axisToggleBtn = QtWidgets.QPushButton("Axis")
-        self.axisToggleBtn.setCheckable(True)
-        self.axisToggleBtn.setChecked(True)
-        self.gridToggleBtn.toggled.connect(self.viewer_3d.setGridVisible)
-        self.axisToggleBtn.toggled.connect(self.viewer_3d.setAxisVisible)
-        for btn in [self.gridToggleBtn, self.axisToggleBtn]:
+        # --- Center panel: LEFT (real data) / RIGHT (Gerber model) 3D panes ---
+        self.amColorZeffBtn = QtWidgets.QPushButton("Z_eff")
+        self.amColorRhoeBtn = QtWidgets.QPushButton("ρ_e")
+        self.amColorMaterialBtn = QtWidgets.QPushButton("Material")
+        for btn in (self.amColorZeffBtn, self.amColorRhoeBtn, self.amColorMaterialBtn):
+            btn.setCheckable(True)
             btn.setMaximumHeight(22)
-        viewToggleRow = QtWidgets.QWidget()
-        viewToggleLayout = QtWidgets.QHBoxLayout(viewToggleRow)
-        viewToggleLayout.setContentsMargins(0, 0, 0, 0)
-        viewToggleLayout.addWidget(self.gridToggleBtn)
-        viewToggleLayout.addWidget(self.axisToggleBtn)
+        self.amColorZeffBtn.setChecked(True)
+        self._amColorGroup = QtWidgets.QButtonGroup(self)
+        self._amColorGroup.setExclusive(True)
+        self._amColorGroup.addButton(self.amColorZeffBtn)
+        self._amColorGroup.addButton(self.amColorRhoeBtn)
+        self._amColorGroup.addButton(self.amColorMaterialBtn)
+        self.amColorZeffBtn.toggled.connect(lambda checked: checked and self._renderAMVolume())
+        self.amColorRhoeBtn.toggled.connect(lambda checked: checked and self._renderAMVolume())
+        self.amColorMaterialBtn.toggled.connect(lambda checked: checked and self._renderAMVolume())
 
-        # --- 3D volume controls ---
-        self.threshSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.threshSlider.setRange(0, 50)
-        self.threshSlider.setValue(10)
-        self.threshSlider.setMaximumHeight(18)
-        self.threshSlider.setToolTip("3D threshold: voxels below this intensity are hidden (0–50%)")
+        self.materialLegendWidget = MaterialLegendWidget()
+        self.materialLegendWidget.setVisible(False)
 
-        self.opacitySlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.opacitySlider.setRange(1, 10)
-        self.opacitySlider.setValue(4)
-        self.opacitySlider.setMaximumHeight(18)
-        self.opacitySlider.setToolTip("3D opacity exponent: higher = more transparent mid-range voxels")
+        self.amLegendBtn = QtWidgets.QPushButton("Legend")
+        self.amLegendBtn.setMaximumHeight(22)
+        self.amLegendBtn.setCheckable(True)
+        self.amLegendBtn.toggled.connect(self.materialLegendWidget.setVisible)
 
-        threshRow = QtWidgets.QWidget()
-        threshLayout = QtWidgets.QHBoxLayout(threshRow)
-        threshLayout.setContentsMargins(0, 0, 0, 0)
-        threshLayout.addWidget(QtWidgets.QLabel("3D Thresh:"))
-        threshLayout.addWidget(self.threshSlider)
+        amColorRow = QtWidgets.QWidget()
+        amColorLayout = QtWidgets.QHBoxLayout(amColorRow)
+        amColorLayout.setContentsMargins(0, 0, 0, 0)
+        amColorLayout.addWidget(QtWidgets.QLabel("AM Color:"))
+        amColorLayout.addWidget(self.amColorZeffBtn)
+        amColorLayout.addWidget(self.amColorRhoeBtn)
+        amColorLayout.addWidget(self.amColorMaterialBtn)
+        amColorLayout.addWidget(self.amLegendBtn)
 
-        opacRow = QtWidgets.QWidget()
-        opacLayout = QtWidgets.QHBoxLayout(opacRow)
-        opacLayout.setContentsMargins(0, 0, 0, 0)
-        opacLayout.addWidget(QtWidgets.QLabel("3D Opacity:"))
-        opacLayout.addWidget(self.opacitySlider)
+        leftPane = self._build3DPane(
+            self.viewer_3d_left, "left", self._on3DControlChangedLeft,
+            extra_widgets=[amColorRow],
+        )
+        rightPane = self._build3DPane(self.viewer_3d_right, "right", self._on3DControlChangedRight)
 
-        self.threshSlider.valueChanged.connect(self._on3DControlChanged)
-        self.opacitySlider.valueChanged.connect(self._on3DControlChanged)
-
-        cameraControlsWidget = QtWidgets.QWidget()
-        ccl = QtWidgets.QVBoxLayout(cameraControlsWidget)
-        ccl.setContentsMargins(0, 0, 0, 0)
-        ccl.setSpacing(2)
-        ccl.addWidget(self.cameraCtrl)
-        ccl.addWidget(viewToggleRow)
-        ccl.addWidget(threshRow)
-        ccl.addWidget(opacRow)
-        ccl.addStretch()
-
-        centerSplitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        centerSplitter.addWidget(cameraControlsWidget)
-        centerSplitter.addWidget(self.viewer_3d)
-        centerSplitter.setStretchFactor(0, 0)
+        centerSplitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        centerSplitter.addWidget(leftPane)
+        centerSplitter.addWidget(rightPane)
+        centerSplitter.setStretchFactor(0, 1)
         centerSplitter.setStretchFactor(1, 1)
 
         centerPanel = QtWidgets.QWidget()
@@ -301,8 +387,12 @@ class MainWin(QtWidgets.QMainWindow):
             useSplitter=True,
             layout="H",
         )
-        # Extra layer of nesting allows margin to look a bit better
-        EasyWidget.buildMainWindow([children], window=self)
+        # Extra layer of nesting allows margin to look a bit better.
+        # materialLegendWidget docks below everything else, hidden by
+        # default, shown via the "Legend" toggle button.
+        EasyWidget.buildMainWindow(
+            [children, self.materialLegendWidget], layout="V", window=self
+        )
         self.setWindowTitle("X-ray Reconstruction")
 
         # --- Status bar ---
@@ -333,6 +423,47 @@ class MainWin(QtWidgets.QMainWindow):
         self.tbl.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
         )
+
+    def _apply_rgba_controls(
+        self,
+        rgba_base: np.ndarray,
+        threshold: float,
+        transparency_factor: float,
+        intensity_cube: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return a copy of *rgba_base* with threshold masking and opacity applied.
+
+        threshold: 0.0–0.5 normalised intensity — voxels below this become transparent.
+        transparency_factor: 0.5–5.0 — higher means more transparent (matches grayscale slider).
+        intensity_cube: (H, W, Z) per-voxel intensity used for threshold masking.
+        Defaults to model.dataCube (the left/real-data pane) when not given. Must
+        match rgba_base's (H, W, Z) shape or masking is skipped — e.g. the Gerber
+        color view's Z axis is a visually-compressed "gap slices" count that does
+        not correspond 1:1 to the physical voxel depth.
+        """
+        rgba = rgba_base.copy()
+
+        if intensity_cube is None:
+            intensity_cube = self.model.dataCube
+
+        if (
+            threshold > 0
+            and intensity_cube is not None
+            and intensity_cube.size > 0
+            and intensity_cube.shape[:3] == rgba.shape[:3]
+        ):
+            cube = intensity_cube.astype(np.float32)
+            cmin, cmax = float(cube.min()), float(cube.max())
+            norm_hwz = (cube - cmin) / (cmax - cmin) if cmax > cmin else cube
+            rgba[norm_hwz < threshold, 3] = 0
+
+        alpha_scale = 1.0 / max(0.5, transparency_factor)
+        if alpha_scale < 1.0:
+            rgba[..., 3] = np.clip(
+                rgba[..., 3].astype(np.float32) * alpha_scale, 0, 255
+            ).astype(np.uint8)
+
+        return rgba
 
     def _material_or_error(self, name: str):
         if name.upper() not in MATERIALS_DB:
@@ -397,7 +528,15 @@ class MainWin(QtWidgets.QMainWindow):
             return
 
         rgba_volume = np.concatenate(parts, axis=2)
-        self.viewer_3d.setRGBADataCube(rgba_volume)
+        self._current_rgba_base_right = rgba_volume
+        threshold = self.threshSlider_right.value() / 100.0
+        tf = self.opacitySlider_right.value() / 2.0
+        self.viewer_3d_right.setRGBADataCube(
+            self._apply_rgba_controls(
+                rgba_volume, threshold, tf, intensity_cube=self._gerber_intensity_hwz
+            )
+        )
+        self.viewer_3d_right.resetCamera()
 
         legend_parts = []
         for name, color, is_substrate in self._gerber_layer_legend:
@@ -421,8 +560,7 @@ class MainWin(QtWidgets.QMainWindow):
     ):
         data_zyx = vol[..., 0]
         data_hwz = np.moveaxis(data_zyx, 0, -1)
-        self.model.setCube(data_hwz)
-        self.model.setupTblRows(layer_names, layer_slices)
+        self._gerber_intensity_hwz = data_hwz
 
         self._gerber_layer_blocks = self._build_rgba_layer_blocks(data_hwz, visual_entries)
         self._gerber_layer_legend = [
@@ -437,6 +575,7 @@ class MainWin(QtWidgets.QMainWindow):
         if not file:
             return
         data = np.load(file)
+        self._current_rgba_base_left = None
         self.model.setCube(data)
         self._addToRecentFiles(str(file))
 
@@ -508,6 +647,101 @@ class MainWin(QtWidgets.QMainWindow):
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load Gerber:\n{e}")
 
+    def _voxelize_stackup(self, config: StackupConfig, stackup_path: Path):
+        """Rasterize + voxelize every layer in *config*.
+
+        Relative layer file paths are resolved against *stackup_path*'s parent
+        directory (or config.gerber_dir); absolute layer file paths are used
+        as-is regardless of *stackup_path*. Returns (vol, layer_names,
+        layer_slices, visual_entries) — the same shape `_apply_gerber_volume`
+        expects. Shared by `loadGerberStackup` (JSON file) and the Gerber
+        Stackup Editor (table-built config).
+        """
+        if config.resolution_xy <= 0 or config.resolution_z <= 0:
+            raise ValueError("resolution_xy and resolution_z must both be > 0")
+
+        rasterizer = PyGerberRasterizer(dpi=config.dpi)
+        substrate_mat = self._material_or_error(config.substrate_material)
+        air_mat = self._material_or_error("AIR")
+
+        stackup = []
+        visual_entries = []
+        layer_names = []
+        layer_slices = []
+        z_cursor = 0
+
+        for layer_cfg in config.layers:
+            layer_path = config.resolve_layer_path(stackup_path, layer_cfg.file)
+            if not layer_path.exists():
+                raise FileNotFoundError(
+                    f"Gerber file for layer '{layer_cfg.name}' not found: {layer_path}"
+                )
+
+            with open(layer_path, "r") as f:
+                content = f.read()
+            mask = rasterizer.rasterize(content)
+            if np.max(mask) == 0:
+                raise ValueError(
+                    f"Layer '{layer_cfg.name}' produced an empty raster mask."
+                )
+
+            layer = GerberLayer(layer_cfg.name)
+            layer.raster_mask = mask
+
+            h_px, w_px = mask.shape
+            width_mm = w_px / (config.dpi / 25.4)
+            height_mm = h_px / (config.dpi / 25.4)
+            layer.update_bounds(0, 0)
+            layer.update_bounds(width_mm, height_mm)
+
+            feature_mat = self._material_or_error(layer_cfg.feature_material)
+            bg_mat = self._material_or_error(layer_cfg.background_material)
+            stackup.append((layer, layer_cfg.thickness, feature_mat, bg_mat))
+
+            layer_num_slices = max(
+                1, int(np.round(layer_cfg.thickness / config.resolution_z))
+            )
+            layer_names.append(layer_cfg.name)
+            layer_slices.append(np.arange(z_cursor, z_cursor + layer_num_slices))
+            z_cursor += layer_num_slices
+            visual_entries.append(
+                {
+                    "name": layer_cfg.name,
+                    "is_substrate": False,
+                    "num_slices": layer_num_slices,
+                    "color": layer_cfg.color,
+                }
+            )
+
+            if layer_cfg.gap > 0:
+                substrate_name = f"{layer_cfg.name}_substrate"
+                substrate_layer = GerberLayer(substrate_name)
+                substrate_layer.update_bounds(0, 0)
+                substrate_layer.update_bounds(width_mm, height_mm)
+                stackup.append(
+                    (substrate_layer, layer_cfg.gap, substrate_mat, substrate_mat)
+                )
+
+                gap_slices = max(1, int(np.round(layer_cfg.gap / config.resolution_z)))
+                layer_names.append(substrate_name)
+                layer_slices.append(np.arange(z_cursor, z_cursor + gap_slices))
+                z_cursor += gap_slices
+                visual_entries.append(
+                    {
+                        "name": substrate_name,
+                        "is_substrate": True,
+                        "num_slices": gap_slices,
+                        "color": (80, 80, 80, 10),
+                    }
+                )
+
+        vox = Voxelizer(
+            resolution_xy=config.resolution_xy,
+            resolution_z=config.resolution_z,
+        )
+        vol = vox.voxelize_stackup(stackup, air_mat)
+        return vol, layer_names, layer_slices, visual_entries
+
     @bind(file=dict(type="file", nameFilter="Stackup Files (*.json);;All Files (*)", value=""))
     def loadGerberStackup(self, file: str | Path):
         if not file:
@@ -516,89 +750,9 @@ class MainWin(QtWidgets.QMainWindow):
         stackup_path = Path(file)
         try:
             config = StackupConfig.from_json(stackup_path)
-            if config.resolution_xy <= 0 or config.resolution_z <= 0:
-                raise ValueError("resolution_xy and resolution_z must both be > 0")
-
-            rasterizer = PyGerberRasterizer(dpi=config.dpi)
-            substrate_mat = self._material_or_error(config.substrate_material)
-            air_mat = self._material_or_error("AIR")
-
-            stackup = []
-            visual_entries = []
-            layer_names = []
-            layer_slices = []
-            z_cursor = 0
-
-            for layer_cfg in config.layers:
-                layer_path = config.resolve_layer_path(stackup_path, layer_cfg.file)
-                if not layer_path.exists():
-                    raise FileNotFoundError(
-                        f"Gerber file for layer '{layer_cfg.name}' not found: {layer_path}"
-                    )
-
-                with open(layer_path, "r") as f:
-                    content = f.read()
-                mask = rasterizer.rasterize(content)
-                if np.max(mask) == 0:
-                    raise ValueError(
-                        f"Layer '{layer_cfg.name}' produced an empty raster mask."
-                    )
-
-                layer = GerberLayer(layer_cfg.name)
-                layer.raster_mask = mask
-
-                h_px, w_px = mask.shape
-                width_mm = w_px / (config.dpi / 25.4)
-                height_mm = h_px / (config.dpi / 25.4)
-                layer.update_bounds(0, 0)
-                layer.update_bounds(width_mm, height_mm)
-
-                feature_mat = self._material_or_error(layer_cfg.feature_material)
-                bg_mat = self._material_or_error(layer_cfg.background_material)
-                stackup.append((layer, layer_cfg.thickness, feature_mat, bg_mat))
-
-                layer_num_slices = max(
-                    1, int(np.round(layer_cfg.thickness / config.resolution_z))
-                )
-                layer_names.append(layer_cfg.name)
-                layer_slices.append(np.arange(z_cursor, z_cursor + layer_num_slices))
-                z_cursor += layer_num_slices
-                visual_entries.append(
-                    {
-                        "name": layer_cfg.name,
-                        "is_substrate": False,
-                        "num_slices": layer_num_slices,
-                        "color": layer_cfg.color,
-                    }
-                )
-
-                if layer_cfg.gap > 0:
-                    substrate_name = f"{layer_cfg.name}_substrate"
-                    substrate_layer = GerberLayer(substrate_name)
-                    substrate_layer.update_bounds(0, 0)
-                    substrate_layer.update_bounds(width_mm, height_mm)
-                    stackup.append(
-                        (substrate_layer, layer_cfg.gap, substrate_mat, substrate_mat)
-                    )
-
-                    gap_slices = max(1, int(np.round(layer_cfg.gap / config.resolution_z)))
-                    layer_names.append(substrate_name)
-                    layer_slices.append(np.arange(z_cursor, z_cursor + gap_slices))
-                    z_cursor += gap_slices
-                    visual_entries.append(
-                        {
-                            "name": substrate_name,
-                            "is_substrate": True,
-                            "num_slices": gap_slices,
-                            "color": (80, 80, 80, 10),
-                        }
-                    )
-
-            vox = Voxelizer(
-                resolution_xy=config.resolution_xy,
-                resolution_z=config.resolution_z,
+            vol, layer_names, layer_slices, visual_entries = self._voxelize_stackup(
+                config, stackup_path
             )
-            vol = vox.voxelize_stackup(stackup, air_mat)
             self._apply_gerber_volume(
                 vol,
                 layer_names,
@@ -606,6 +760,7 @@ class MainWin(QtWidgets.QMainWindow):
                 visual_entries,
                 default_gap_slices=config.default_gap_slices,
             )
+            self._openStackupEditor(config, stackup_path)
 
             QtWidgets.QMessageBox.information(
                 self,
@@ -633,6 +788,131 @@ class MainWin(QtWidgets.QMainWindow):
 
         self._gerber_gap_slices = int(gapSlices)
         self._render_gerber_color_volume()
+
+    def editGerberStackup(self):
+        self._openStackupEditor()
+
+    def _openStackupEditor(
+        self, config: StackupConfig | None = None, stackup_path: Path | None = None
+    ):
+        if self._stackupEditor is None:
+            self._stackupEditor = StackupEditorWindow(
+                self._voxelizeStackupFromEditor,
+                self._simulateXrayFromEditor,
+                self._showAlvarezMacovskiPlot,
+                self._showAMVolumeIn3D,
+                parent=self,
+            )
+        if config is not None:
+            self._stackupEditor.setConfig(config, stackup_path or Path.cwd())
+        self._stackupEditor.show()
+        self._stackupEditor.raise_()
+        self._stackupEditor.activateWindow()
+
+    def _voxelizeStackupFromEditor(self, config: StackupConfig, stackup_path: Path):
+        try:
+            vol, layer_names, layer_slices, visual_entries = self._voxelize_stackup(
+                config, stackup_path
+            )
+            self._apply_gerber_volume(
+                vol,
+                layer_names,
+                layer_slices,
+                visual_entries,
+                default_gap_slices=config.default_gap_slices,
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to voxelize stackup:\n{e}")
+
+    def _simulateXrayFromEditor(self, config: StackupConfig, stackup_path: Path):
+        """Simulate a CT reconstruction of *config* and show it in the LEFT pane."""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
+                config, stackup_path
+            )
+            sim_zhw = simulate_ct_volume(vol)
+            sim_hwz = np.moveaxis(sim_zhw, 0, -1)
+
+            self._current_rgba_base_left = None
+            self.model.setCube(sim_hwz)
+            self.viewer_3d_left.setDataCube(sim_hwz)
+            self.viewer_3d_left.resetCamera()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to simulate X-ray:\n{e}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        QtWidgets.QMessageBox.information(
+            self, "Simulated X-ray",
+            f"Simulated CT volume: {sim_hwz.shape} (FBP reconstruction via Radon transform)"
+        )
+
+    def _runAMDecomposition(self, config: StackupConfig, stackup_path: Path) -> dict | None:
+        """Voxelize *config* and run the Alvarez-Macovski dual-energy
+        decomposition across every slice. Returns None (after showing an
+        error dialog) on failure."""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
+                config, stackup_path
+            )
+            result = simulate_am_volume(vol)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to run AM decomposition:\n{e}")
+            return None
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        return result
+
+    def _showAlvarezMacovskiPlot(self, config: StackupConfig, stackup_path: Path):
+        """Run the Alvarez-Macovski dual-energy decomposition on *config* and
+        show a ground-truth-vs-recovered Z_eff/electron-density comparison."""
+        result = self._runAMDecomposition(config, stackup_path)
+        if result is None:
+            return
+        self._am_result = result
+        self._amPlotWindow = AMPlotWindow(result, parent=self)
+        self._amPlotWindow.show()
+
+    def _showAMVolumeIn3D(self, config: StackupConfig, stackup_path: Path):
+        """Run the Alvarez-Macovski decomposition across every slice of the
+        stackup and render the recovered volume in the LEFT 3D pane,
+        colorized by whichever quantity (Z_eff / rho_e) is currently
+        toggled via amColorZeffBtn/amColorRhoeBtn."""
+        result = self._runAMDecomposition(config, stackup_path)
+        if result is None:
+            return
+        self._am_result = result
+        self._renderAMVolume()
+
+    def _renderAMVolume(self):
+        """Colorize the cached AM result by the current toggle state and push
+        it into the LEFT 3D pane. No-op if no AM decomposition has run yet."""
+        if self._am_result is None:
+            return
+        zeff_vol = self._am_result["zeff_recovered"]
+        rhoe_vol = self._am_result["rhoe_recovered"]
+
+        if self.amColorZeffBtn.isChecked():
+            rgba = colorize_volume(zeff_vol, "plasma")
+        elif self.amColorRhoeBtn.isChecked():
+            rgba = colorize_volume(rhoe_vol, "cividis")
+        else:
+            rgba = colorize_by_material(zeff_vol, rhoe_vol)
+
+        scalar_hwz = np.moveaxis(rhoe_vol, 0, -1)
+
+        self._current_rgba_base_left = rgba
+        self.model.setRGBACube(scalar_hwz, rgba)
+        self.viewer_3d_left.setRGBADataCube(rgba)
+        self.viewer_3d_left.resetCamera()
 
     @bind(location=dict(type="file", fileMode="Directory", value=""))
     @bind(alert=dict(value=True, ignore=True))
@@ -664,10 +944,108 @@ class MainWin(QtWidgets.QMainWindow):
             msgBox.setModal(True)
             msgBox.exec()
 
+    @staticmethod
+    def _default_ed_config() -> MultiMaterialConfig:
+        return MultiMaterialConfig(
+            name="ED Data (default)",
+            channels=["fbp"],
+            materials=[
+                MaterialEntry("AIR",    color=(0,   0,   200, 5),   threshold=(0.0,  0.05)),
+                MaterialEntry("FR4",    color=(80,  80,  80,  80),  threshold=(0.05, 0.3)),
+                MaterialEntry("COPPER", color=(255, 140, 0,   200), threshold=(0.3,  1.0)),
+            ],
+        )
+
+    def _apply_multimaterial_volume(
+        self, vol: np.ndarray, config: MultiMaterialConfig
+    ) -> None:
+        """Segment *vol* per *config*, render RGBA in 3D, update 2D model."""
+        norm = normalize_volume(vol)
+        labels = voxel_to_material_id(norm, config)
+        rgba = label_map_to_rgba(labels, config)
+
+        vol_3d = norm[0] if norm.ndim == 4 else norm    # (Z, H, W)
+        vol_hwz = np.moveaxis(vol_3d, 0, -1)             # (H, W, Z)
+
+        # setRGBACube sets both atomically so LayerView.resetItems sees RGBA on first draw
+        self._current_rgba_base_left = rgba
+        self.model.setRGBACube(vol_hwz, rgba)
+        threshold = self.threshSlider_left.value() / 100.0
+        tf = self.opacitySlider_left.value() / 2.0
+        self.viewer_3d_left.setRGBADataCube(self._apply_rgba_controls(rgba, threshold, tf))
+        self.viewer_3d_left.resetCamera()
+
+    @bind(file=dict(type="file", nameFilter="Multi-Material Config (*.json);;All Files (*)", value=""))
+    def loadMultiMaterial(self, file: str | Path):
+        if not file:
+            return
+        config_path = Path(file)
+        try:
+            config = MultiMaterialConfig.from_json(config_path)
+            data_dir = config.resolve_data_dir(config_path)
+            if not data_dir.exists():
+                QtWidgets.QMessageBox.critical(
+                    self, "Error",
+                    f"Data directory not found: {data_dir}\n"
+                    "Set 'data_dir' in the config JSON or place data next to the config file."
+                )
+                return
+            vol = load_ed_data(data_dir)
+            self._apply_multimaterial_volume(vol, config)
+            QtWidgets.QMessageBox.information(
+                self, "Loaded",
+                f"Multi-material config: {config.name}\n"
+                f"Volume shape: {vol.shape}  ({len(config.materials)} materials)"
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load multi-material data:\n{e}")
+
+    @bind(directory=dict(type="file", fileMode="Directory", value=""))
+    def loadEDData(self, directory: str | Path):
+        if not directory:
+            return
+        try:
+            vol = load_ed_data(directory)
+            config = self._default_ed_config()
+            self._apply_multimaterial_volume(vol, config)
+            QtWidgets.QMessageBox.information(
+                self, "ED Data Loaded",
+                f"Volume shape: {vol.shape}\n"
+                "Using default AIR / FR4 / COPPER thresholds.\n"
+                "Load a Multi-Material Config JSON to customise."
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load ED data:\n{e}")
+
+    def loadPhantomDemo(self):
+        """Load a self-contained synthetic multi-material phantom (no real data required)."""
+        try:
+            config_path = Path(__file__).resolve().parents[2] / "configs" / "phantom_demo.json"
+            config = MultiMaterialConfig.from_json(config_path)
+            vol = phantomSpheres(n=128)
+            self._apply_multimaterial_volume(vol, config)
+            QtWidgets.QMessageBox.information(
+                self, "Phantom Demo Loaded",
+                f"Synthetic phantom: {vol.shape}  ({len(config.materials)} materials)"
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load phantom demo:\n{e}")
+
     def fixRotation(self):
         win = RotateWindow(self.model.dataCube)
         win.show()
-        win.sigChangesAccepted.connect(lambda: self.model.setCube(win.cube))
+
+        def _accept_rotation():
+            self._current_rgba_base_left = None
+            self.model.setCube(win.cube)
+
+        win.sigChangesAccepted.connect(_accept_rotation)
 
     def showDevConsole(self):
         safeSpawnDevConsole(self)
@@ -772,6 +1150,7 @@ class MainWin(QtWidgets.QMainWindow):
     def _loadRecentFile(self, path: str):
         try:
             data = np.load(path)
+            self._current_rgba_base_left = None
             self.model.setCube(data)
             self._addToRecentFiles(path)
         except Exception as e:
@@ -788,16 +1167,31 @@ class MainWin(QtWidgets.QMainWindow):
         self._settings.setValue("recentFiles", recent[:10])
         self._populateRecentMenu()
 
-    def _on3DControlChanged(self):
+    def _on3DControlChangedLeft(self):
         if self.model.dataCube is None or self.model.dataCube.size == 0:
             return
-        threshold = self.threshSlider.value() / 100.0
-        tf = self.opacitySlider.value() / 2.0
-        self.viewer_3d.setDataCube(
-            self.model.dataCube,
-            transparencyFactor=tf,
-            threshold=threshold,
+        threshold = self.threshSlider_left.value() / 100.0
+        tf = self.opacitySlider_left.value() / 2.0
+        if self._current_rgba_base_left is not None:
+            rgba = self._apply_rgba_controls(self._current_rgba_base_left, threshold, tf)
+            self.viewer_3d_left.setRGBADataCube(rgba)
+        else:
+            self.viewer_3d_left.setDataCube(
+                self.model.dataCube,
+                transparencyFactor=tf,
+                threshold=threshold,
+            )
+
+    def _on3DControlChangedRight(self):
+        if self._current_rgba_base_right is None:
+            return
+        threshold = self.threshSlider_right.value() / 100.0
+        tf = self.opacitySlider_right.value() / 2.0
+        rgba = self._apply_rgba_controls(
+            self._current_rgba_base_right, threshold, tf,
+            intensity_cube=self._gerber_intensity_hwz,
         )
+        self.viewer_3d_right.setRGBADataCube(rgba)
 
     @bind(downsampleFactor=dict(limits=(1, 10)), transparency=dict(limits=(0, None)))
     def highlight3DSlices(self, downsampleFactor=3, transparencyFactor=None):
@@ -810,8 +1204,8 @@ class MainWin(QtWidgets.QMainWindow):
             Opacity exponent. If None, uses the 3D Opacity slider value.
         """
         if transparencyFactor is None:
-            transparencyFactor = self.opacitySlider.value() / 2.0
-        threshold = self.threshSlider.value() / 100.0
+            transparencyFactor = self.opacitySlider_left.value() / 2.0
+        threshold = self.threshSlider_left.value() / 100.0
         selectedRows = self.model.layerDf["View"]
         if np.any(selectedRows):
             selectedSlices = np.concatenate(
@@ -819,7 +1213,19 @@ class MainWin(QtWidgets.QMainWindow):
             )
         else:
             selectedSlices = None
-        self.viewer_3d.setDataCube(
-            self.model.dataCube, selectedSlices, downsampleFactor, transparencyFactor,
-            threshold=threshold
-        )
+
+        if self._current_rgba_base_left is not None:
+            rgba = self._apply_rgba_controls(self._current_rgba_base_left, threshold, transparencyFactor)
+            if selectedSlices is not None:
+                all_z = np.arange(rgba.shape[2])
+                non_sel = np.setdiff1d(all_z, selectedSlices)
+                if non_sel.size:
+                    rgba[:, :, non_sel, 3] = (
+                        rgba[:, :, non_sel, 3].astype(np.float32) * 0.05
+                    ).astype(np.uint8)
+            self.viewer_3d_left.setRGBADataCube(rgba)
+        else:
+            self.viewer_3d_left.setDataCube(
+                self.model.dataCube, selectedSlices, downsampleFactor, transparencyFactor,
+                threshold=threshold
+            )

@@ -25,5 +25,18 @@ MATERIALS_DB: Dict[str, MaterialProperties] = {
     "SILVER": MaterialProperties("Silver", 47.0, 10.49)
 }
 
+# Canonical display color per material, shared by the stackup editor's color
+# pickers and the Alvarez-Macovski material legend/lookup so both draw from
+# the same reference (RGBA, alpha carries default 3D-view opacity).
+MATERIAL_COLORS: Dict[str, Tuple[int, int, int, int]] = {
+    "AIR": (0, 0, 200, 5),
+    "COPPER": (255, 140, 0, 200),
+    "FR4": (80, 80, 80, 60),
+    "SOLDER": (200, 200, 0, 200),
+    "GOLD": (255, 215, 0, 200),
+    "SILVER": (192, 192, 192, 200),
+}
+
+
 def get_material(name: str) -> MaterialProperties:
     return MATERIALS_DB.get(name.upper(), MATERIALS_DB["AIR"])

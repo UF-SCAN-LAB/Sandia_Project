@@ -1,0 +1,10 @@
+{
+  "name": "Phantom Demo",
+  "channels": ["intensity"],
+  "materials": [
+    {"name": "AIR",    "color": [0,   0,   200, 5],   "threshold": [0.0,  0.15]},
+    {"name": "FR4",    "color": [80,  80,  80,  60],  "threshold": [0.15, 0.45]},
+    {"name": "SOLDER", "color": [200, 200, 0,   180], "threshold": [0.45, 0.7]},
+    {"name": "COPPER", "color": [255, 140, 0,   200], "threshold": [0.7,  1.0]}
+  ]
+}

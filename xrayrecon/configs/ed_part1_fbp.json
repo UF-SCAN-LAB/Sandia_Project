@@ -1,0 +1,10 @@
+{
+  "name": "ED Part1 FBP",
+  "channels": ["fbp"],
+  "data_dir": "E:\\Data\\ED Data\\part1\\part1",
+  "materials": [
+    {"name": "AIR",    "color": [0,   0,   200, 5],   "threshold": [0.0,  0.05]},
+    {"name": "FR4",    "color": [80,  80,  80,  80],  "threshold": [0.05, 0.3]},
+    {"name": "COPPER", "color": [255, 140, 0,   200], "threshold": [0.3,  1.0]}
+  ]
+}

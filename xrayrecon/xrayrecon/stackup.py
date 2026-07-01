@@ -83,6 +83,33 @@ class StackupConfig:
             default_gap_slices=int(data.get("default_gap_slices", 20)),
         )
 
+    def to_dict(self) -> dict:
+        out = {
+            "layers": [
+                {
+                    "file": layer.file,
+                    "name": layer.name,
+                    "thickness": layer.thickness,
+                    "gap": layer.gap,
+                    "feature_material": layer.feature_material,
+                    "background_material": layer.background_material,
+                    "color": list(layer.color),
+                }
+                for layer in self.layers
+            ],
+            "dpi": self.dpi,
+            "resolution_xy": self.resolution_xy,
+            "resolution_z": self.resolution_z,
+            "substrate_material": self.substrate_material,
+            "default_gap_slices": self.default_gap_slices,
+        }
+        if self.gerber_dir is not None:
+            out["gerber_dir"] = self.gerber_dir
+        return out
+
+    def to_json(self, path: str | Path) -> None:
+        Path(path).write_text(json.dumps(self.to_dict(), indent=2))
+
     def resolve_layer_path(self, stackup_file: str | Path, layer_file: str) -> Path:
         stackup_path = Path(stackup_file)
         if self.gerber_dir:

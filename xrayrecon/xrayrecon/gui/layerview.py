@@ -70,6 +70,7 @@ class LayerView:
         if self.itemParent is not None:
             for item in self.items:
                 self.itemParent.addItem(item)
+        self.showRelevantImages()
 
     def showRelevantImages(self):
         showIdxs = np.flatnonzero(self.model.layerDf["View"].values)
@@ -85,7 +86,7 @@ class LayerView:
             self.parentViewbox.autoRange()
 
     def setLevels(self, minVal: float, maxVal: float):
-        """Apply brightness/contrast levels to all visible image items."""
+        """Apply brightness/contrast levels to visible grayscale image items."""
         for item in self.items:
-            if item.isVisible():
+            if item.isVisible() and item.image is not None and item.image.ndim == 2:
                 item.setLevels((minVal, maxVal))
