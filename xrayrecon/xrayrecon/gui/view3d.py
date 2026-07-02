@@ -15,10 +15,13 @@ class PCBViewer3D(gl.GLViewWidget):
         super().__init__()
         self.opts["distance"] = 200
         self.setWindowTitle("pyqtgraph example: GLVolumeItem")
+        self.setBackgroundColor((30, 30, 34))
         self.gridItem = gl.GLGridItem()
+        self.gridItem.setColor((150, 150, 150, 60))
         self.addItem(self.gridItem)
         self.curVolume = None
         self.axisItem = gl.GLAxisItem()
+        self.axisItem.setGLOptions("translucent")
         self.addItem(self.axisItem)
         self.volume = gl.GLVolumeItem(np.zeros((1, 1), dtype="uint8"))
         self.addItem(self.volume)
@@ -61,11 +64,6 @@ class PCBViewer3D(gl.GLViewWidget):
             highlight_alpha = (alpha_f[:, :, highlightIdxs] * 1.2 * 255).clip(0, 255).astype(np.ubyte)
             d2[:, :, highlightIdxs, 3] = highlight_alpha
 
-        # RGB axis alignment items
-        d2[:, 0, 0] = [255, 0, 0, 100]
-        d2[0, :, 0] = [0, 255, 0, 100]
-        d2[0, 0, :] = [0, 0, 255, 100]
-
         self.volume.setData(d2)
 
     def setRGBADataCube(self, data, downsampleFactor=None):
@@ -81,11 +79,6 @@ class PCBViewer3D(gl.GLViewWidget):
 
         self._setGridForShape(data.shape)
         rgba = data.astype(np.ubyte, copy=False)
-
-        # RGB axis alignment items
-        rgba[:, 0, 0] = [255, 0, 0, 100]
-        rgba[0, :, 0] = [0, 255, 0, 100]
-        rgba[0, 0, :] = [0, 0, 255, 100]
 
         self.volume.setData(rgba)
 

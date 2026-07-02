@@ -189,6 +189,9 @@ class MainWin(QtWidgets.QMainWindow):
             self._loadSyntheticRegistrationDemo,
             name="Debug: Load Synthetic Registration Demo",
         )
+        self.toolsEditor.registerFunction(
+            self.loadSophisticatedPcbDemo, name="Load Sophisticated PCB Demo",
+        )
         self._buildUi()
 
     def _build3DPane(
@@ -290,6 +293,13 @@ class MainWin(QtWidgets.QMainWindow):
         self._settings = QtCore.QSettings("XrayRecon", "MainWin")
         self._populateRecentMenu()
 
+        # Tools panel as a real dock (resizable/floatable/closable) instead of
+        # a fixed embed -- also gets a populated "Tools" menu-bar menu for free.
+        self._toolsDock, _ = self.toolsEditor.createWindowDock(
+            self, title="Tools", dockArea=QtCore.Qt.DockWidgetArea.LeftDockWidgetArea,
+        )
+        self._toolsDock.show()
+
         # --- Left panel: Select All/Deselect All + layer filter + table ---
         self.selectAllBtn = QtWidgets.QPushButton("Select All")
         self.deselectAllBtn = QtWidgets.QPushButton("Deselect All")
@@ -321,7 +331,6 @@ class MainWin(QtWidgets.QMainWindow):
         leftPanel = QtWidgets.QWidget()
         ll = QtWidgets.QVBoxLayout(leftPanel)
         ll.setContentsMargins(0, 0, 0, 0)
-        ll.addWidget(self.toolsEditor)
         ll.addWidget(tblBtnRow)
         ll.addWidget(self.layerFilterEdit)
         ll.addWidget(self.tbl)
@@ -372,6 +381,16 @@ class MainWin(QtWidgets.QMainWindow):
         centerSplitter.setStretchFactor(0, 1)
         centerSplitter.setStretchFactor(1, 1)
 
+        # Right-click context menu on both 3D panes, built fresh from every
+        # currently-registered Tools action on each click.
+        for _viewer in (self.viewer_3d_left, self.viewer_3d_right):
+            _viewer.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            _viewer.customContextMenuRequested.connect(
+                lambda pos, v=_viewer: self.toolsEditor.createActionsFromFunctions().exec_(
+                    v.mapToGlobal(pos)
+                )
+            )
+
         centerPanel = QtWidgets.QWidget()
         cl = QtWidgets.QVBoxLayout(centerPanel)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -413,8 +432,15 @@ class MainWin(QtWidgets.QMainWindow):
         rl.addWidget(maxRow)
         rl.addWidget(self.plt)
 
+        # Dock the Z_eff/rho_e plot panel too, instead of a fixed splitter
+        # pane, so it can be resized/floated/closed like the Tools dock.
+        self._plotDock = QtWidgets.QDockWidget("Z_eff / ρ_e Plot", self)
+        self._plotDock.setObjectName("PlotDock")
+        self._plotDock.setWidget(rightPanel)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._plotDock)
+
         children = EasyWidget(
-            [leftPanel, centerPanel, rightPanel],
+            [leftPanel, centerPanel],
             useSplitter=True,
             layout="H",
         )
@@ -1016,6 +1042,47 @@ class MainWin(QtWidgets.QMainWindow):
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load phantom demo:\n{e}")
+
+    def loadSophisticatedPcbDemo(self):
+        """Voxelize a richer synthetic multi-material PCB stackup (ENIG + HASL
+        finishes) and run it through the simulated-CT / AM-decomposition
+        pipeline -- no external files touched."""
+        from ..demo_pcb import build_sophisticated_pcb_stackup
+        try:
+            spacing = (0.05, 0.05, 0.02)
+            stackup, air, layer_names, layer_slices = build_sophisticated_pcb_stackup(
+                resolution_z=spacing[2]
+            )
+            vox = Voxelizer(resolution_xy=spacing[0], resolution_z=spacing[2])
+            vol, material_ids_zhw = vox.voxelize_stackup(stackup, air, return_material_ids=True)
+
+            sim_zhw = simulate_ct_volume(vol)
+            sim_hwz = np.moveaxis(sim_zhw, 0, -1)
+            gt_rgba = colorize_material_labels(material_ids_zhw)
+
+            self._current_rgba_base_left = None
+            self.model.setCube(sim_hwz)
+            # setCube's own auto-layer-detection is tuned for real CT scans
+            # with hundreds of slices and collapses to one degenerate row on
+            # a volume this small -- overwrite with the real, known layer
+            # boundaries from build_sophisticated_pcb_stackup instead.
+            self.model.setupTblRows(layer_names, layer_slices)
+            self.model.setSpacing(*spacing)
+            self.viewer_3d_left.setDataCube(sim_hwz)
+            self.viewer_3d_left.resetCamera()
+            self.viewer_3d_right.setRGBADataCube(gt_rgba)
+            self.viewer_3d_right.resetCamera()
+
+            self._am_result = simulate_am_volume(vol)
+            QtWidgets.QMessageBox.information(
+                self, "Sophisticated PCB Demo Loaded",
+                f"Voxelized: {vol.shape[:3]}  |  AM decomposition complete -- "
+                "use 'Show Alvarez-Macovski Plot' / AM Color buttons to inspect.",
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load PCB demo:\n{e}")
 
     def setRealCTSpacing(self):
         dlg = SpacingDialog(self.model.spacing_xyz, parent=self)

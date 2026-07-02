@@ -22,8 +22,20 @@ MATERIALS_DB: Dict[str, MaterialProperties] = {
     "FR4": MaterialProperties("FR4", 6.5, 1.85),
     "SOLDER": MaterialProperties("Solder", 60.0, 8.5), # Averaged for SnPb
     "GOLD": MaterialProperties("Gold", 79.0, 19.3),
-    "SILVER": MaterialProperties("Silver", 47.0, 10.49)
+    "SILVER": MaterialProperties("Silver", 47.0, 10.49),
+    "NICKEL": MaterialProperties("Nickel", 28.0, 8.90),
+    "TIN": MaterialProperties("Tin", 50.0, 7.31),
+    "LEAD": MaterialProperties("Lead", 82.0, 11.34),
+    "ALUMINUM": MaterialProperties("Aluminum", 13.0, 2.70),
+    "TITANIUM": MaterialProperties("Titanium", 22.0, 4.51),
+    "TUNGSTEN": MaterialProperties("Tungsten", 74.0, 19.25),
+    "ALUMINA": MaterialProperties("Alumina", 10.2, 3.95),
+    "POLYIMIDE": MaterialProperties("Polyimide", 6.5, 1.42)
 }
+
+def get_material(name: str) -> MaterialProperties:
+    return MATERIALS_DB.get(name.upper(), MATERIALS_DB["AIR"])
+
 
 # Canonical display color per material, shared by the stackup editor's color
 # pickers and the Alvarez-Macovski material legend/lookup so both draw from
@@ -35,11 +47,15 @@ MATERIAL_COLORS: Dict[str, Tuple[int, int, int, int]] = {
     "SOLDER": (200, 200, 0, 200),
     "GOLD": (255, 215, 0, 200),
     "SILVER": (192, 192, 192, 200),
+    "NICKEL": (140, 140, 150, 200),
+    "TIN": (210, 210, 220, 180),
+    "LEAD": (90, 90, 110, 200),
+    "ALUMINUM": (180, 190, 200, 140),
+    "TITANIUM": (120, 130, 140, 200),
+    "TUNGSTEN": (70, 60, 90, 220),
+    "ALUMINA": (230, 225, 210, 70),
+    "POLYIMIDE": (200, 160, 60, 50),
 }
-
-
-def get_material(name: str) -> MaterialProperties:
-    return MATERIALS_DB.get(name.upper(), MATERIALS_DB["AIR"])
 
 
 # Canonical ground-truth material label ordering -- single source of truth

@@ -55,9 +55,17 @@ def layerInfoFromScores(scores: np.ndarray):
         del layerSlices[0]
         
     if not layerNames:
-        # Fallback for when no structure is found (e.g. not enough slices)
-        layerNames = ["Layer 0"]
-        layerSlices = [[0, len(scores)]]
+        # Fallback for when no clear repeating structure is found (e.g. not
+        # enough slices, or uniform synthetic material bands with no
+        # via/trace texture for the template matcher to key on -- small
+        # synthetic demo volumes hit this often). Split evenly into a
+        # handful of regions instead of one meaningless whole-volume row,
+        # so the layer selector still gives the user something to select
+        # rather than collapsing to a single unusable blob.
+        n_regions = min(4, max(1, len(scores) + 1))
+        bounds = np.linspace(0, len(scores), n_regions + 1).astype(int)
+        layerNames = [f"Region {i + 1}" for i in range(n_regions)]
+        layerSlices = [[int(bounds[i]), int(bounds[i + 1])] for i in range(n_regions)]
     # Make sure layers start and stop at beginning and end of cube
     layerSlices[0][0] = 0
     layerSlices[-1][-1] = len(scores) - 1

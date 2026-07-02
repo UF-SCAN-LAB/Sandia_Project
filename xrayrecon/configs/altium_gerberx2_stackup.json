@@ -1,0 +1,37 @@
+{
+  "layers": [
+    {
+      "file": "PCB1_Legend_Top.gbr",
+      "name": "Legend Top (Silkscreen)",
+      "thickness": 0.01,
+      "gap": 0.0,
+      "feature_material": "FR4",
+      "background_material": "AIR",
+      "color": [255, 255, 255, 200]
+    },
+    {
+      "file": "PCB1_Soldermask_Top.gbr",
+      "name": "Soldermask Top",
+      "thickness": 0.02,
+      "gap": 0.0,
+      "feature_material": "POLYIMIDE",
+      "background_material": "AIR",
+      "color": [30, 130, 76, 150]
+    },
+    {
+      "file": "PCB1_Copper_Signal_Top.gbr",
+      "name": "Copper Signal Top",
+      "thickness": 0.035,
+      "gap": 1.6,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [255, 140, 0, 220]
+    }
+  ],
+  "gerber_dir": "E:\\git\\AltiumGerberX2",
+  "dpi": 300,
+  "resolution_xy": 0.05,
+  "resolution_z": 0.02,
+  "substrate_material": "FR4",
+  "default_gap_slices": 20
+}

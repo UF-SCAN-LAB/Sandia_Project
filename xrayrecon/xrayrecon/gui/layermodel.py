@@ -43,6 +43,10 @@ class LayerModel(QtCore.QObject):
         # spacing" apart from "never confirmed, still the placeholder default".
         self._spacing_confirmed: bool = False
         self.metricInfo: QtWidgets.QWidget | None = self.NO_METRIC
+        # cube depth (Z slice count) -> (layerNames, layerSlices) for every
+        # depth explicit layer info was set via setupTblRows(); see
+        # _resetLayerInfoIfDepthChanged.
+        self._explicitLayerInfoByDepth: dict[int, tuple[list, list]] = {}
 
         if layerInfo is None:
             layerInfo = self.getAutoLayerInfo(self.dataCube, returnMetric=True)
@@ -96,6 +100,19 @@ class LayerModel(QtCore.QObject):
     def setupTblRows(self, layerNames, layerSlices):
         self.tblModel.removeLayers()
         self.tblModel.addDfRows({"Layer Name": layerNames, "Slices": layerSlices})
+        # addDfRows reassigns tblModel.dataDf to a new DataFrame (via
+        # pd.concat) rather than mutating in place, so this cached reference
+        # must be refreshed too -- mirrors _resetLayerInfoIfDepthChanged,
+        # which already does this correctly.
+        self.layerDf = self.tblModel.dataDf
+        # Remember this explicit (non-auto-detected) layer info by cube
+        # depth, so a later axis toggle (changeAx -> setCube) that changes
+        # depth away and back doesn't silently discard it in favor of the
+        # generic auto-detector -- see _resetLayerInfoIfDepthChanged.
+        if self.dataCube is not None:
+            self._explicitLayerInfoByDepth[self.dataCube.shape[2]] = (
+                list(layerNames), list(layerSlices)
+            )
         self.sigCubeChanged.emit()
 
     def parseGroupSliceCsv(self, csvFname: Union[Path, str]):
@@ -133,14 +150,25 @@ class LayerModel(QtCore.QObject):
         """Recompute layerDf/tblModel when the new cube's Z-depth differs from
         the current one. Without this, stale per-layer slice ranges from a
         differently-sized cube index out of bounds in applyProcess/LayerView
-        (e.g. loading a 34-slice volume after a 256-slice one)."""
+        (e.g. loading a 34-slice volume after a 256-slice one).
+
+        If explicit (non-auto-detected) layer info was previously set via
+        setupTblRows() for this exact depth -- e.g. toggling the axis
+        selector away and back to an orientation whose layer names/slices
+        are already known -- restore that instead of re-running the generic
+        auto-detector, which has no memory of prior state and would
+        otherwise silently discard known-good layer info."""
         oldDepth = self.dataCube.shape[2] if self.dataCube is not None else None
         newDepth = newCube.shape[2] if newCube is not None else None
         if newDepth is None or newDepth == oldDepth:
             return
         self.tblModel.removeLayers()
-        layerInfo = self.getAutoLayerInfo(newCube, returnMetric=True)
-        self.tblModel.addDfRows(layerInfo)
+        if newDepth in self._explicitLayerInfoByDepth:
+            names, slices = self._explicitLayerInfoByDepth[newDepth]
+            self.tblModel.addDfRows({"Layer Name": names, "Slices": slices})
+        else:
+            layerInfo = self.getAutoLayerInfo(newCube, returnMetric=True)
+            self.tblModel.addDfRows(layerInfo)
         self.layerDf = self.tblModel.dataDf
 
     def setSpacing(self, dx: float, dy: float, dz: float):
