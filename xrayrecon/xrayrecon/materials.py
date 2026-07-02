@@ -1,6 +1,6 @@
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 @dataclass
 class MaterialProperties:
@@ -40,3 +40,10 @@ MATERIAL_COLORS: Dict[str, Tuple[int, int, int, int]] = {
 
 def get_material(name: str) -> MaterialProperties:
     return MATERIALS_DB.get(name.upper(), MATERIALS_DB["AIR"])
+
+
+# Canonical ground-truth material label ordering -- single source of truth
+# shared by voxelizer.py (building label volumes) and alvarez_macovski.py
+# (colorizing them), so a label volume's integer indices always mean the
+# same thing regardless of which module produced or consumes them.
+MATERIAL_NAMES: List[str] = sorted(MATERIALS_DB.keys())

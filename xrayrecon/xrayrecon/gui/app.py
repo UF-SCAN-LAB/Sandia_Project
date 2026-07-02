@@ -26,6 +26,8 @@ from .layermodel import LayerModel
 from .layerview import LayerView
 from .am_plot_window import AMPlotWindow, MaterialLegendWidget
 from .stackup_editor import StackupEditorWindow
+from .spacing_dialog import SpacingDialog
+from .registration import RegistrationWindow
 from .view3d import PCBViewer3D
 
 # Gerber Integration Imports
@@ -34,11 +36,18 @@ from ..gerber_utils import GerberLayer
 from ..voxelizer import Voxelizer
 from ..materials import MATERIALS_DB, get_material
 from ..stackup import StackupConfig
+from ..stackup_voxelize import voxelize_stackup_config
 from ..multimaterial import MaterialEntry, MultiMaterialConfig
 from ..io_spectral import load_ed_data
 from ..material_seg import normalize_volume, voxel_to_material_id, label_map_to_rgba
 from ..ct_simulation import simulate_ct_volume
-from ..alvarez_macovski import simulate_am_volume, colorize_volume, colorize_by_material
+from ..alvarez_macovski import (
+    simulate_am_volume,
+    colorize_volume,
+    colorize_by_material,
+    colorize_material_labels,
+)
+from ..registration import RigidScaleTransform, resample_labels
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -90,6 +99,15 @@ class MainWin(QtWidgets.QMainWindow):
         self._current_rgba_base_right: np.ndarray | None = None
         self._stackupEditor: StackupEditorWindow | None = None
         self._am_result: dict | None = None
+        # mm/voxel (x, y, z) captured at voxelization time -- discarded by
+        # Voxelizer itself, so this is the only place it survives for reuse
+        # (e.g. by registration).
+        self._gerber_voxel_spacing_mm: tuple[float, float, float] | None = None
+        self._gerber_material_id_vol_hwz: np.ndarray | None = None
+        self._registration_transform = None
+        self._registration_moving_spacing: tuple[float, float, float] | None = None
+        self._registration_fixed_spacing: tuple[float, float, float] | None = None
+        self._registration_fixed_shape: tuple[int, int, int] | None = None
         # self.model.sigCubeChanged.connect(
         #     lambda: self.viewer_3d_left.setDataCube(self.model.dataCube)
         # )
@@ -158,6 +176,19 @@ class MainWin(QtWidgets.QMainWindow):
         )
         self.toolsEditor.registerFunction(self.loadEDData, name="Load ED Data")
         self.toolsEditor.registerFunction(self.loadPhantomDemo, name="Load Phantom Demo")
+        self.toolsEditor.registerFunction(
+            self.setRealCTSpacing, name="Set Real CT Voxel Spacing..."
+        )
+        self.toolsEditor.registerFunction(
+            self.openRegistrationTool, name="Register Gerber to Real CT..."
+        )
+        self.toolsEditor.registerFunction(
+            self.transferGerberLabels, name="Transfer Gerber Labels to Real CT"
+        )
+        self.toolsEditor.registerFunction(
+            self._loadSyntheticRegistrationDemo,
+            name="Debug: Load Synthetic Registration Demo",
+        )
         self._buildUi()
 
     def _build3DPane(
@@ -647,99 +678,37 @@ class MainWin(QtWidgets.QMainWindow):
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load Gerber:\n{e}")
 
-    def _voxelize_stackup(self, config: StackupConfig, stackup_path: Path):
+    def _voxelize_stackup(
+        self, config: StackupConfig, stackup_path: Path, return_material_ids: bool = False
+    ):
         """Rasterize + voxelize every layer in *config*.
 
-        Relative layer file paths are resolved against *stackup_path*'s parent
-        directory (or config.gerber_dir); absolute layer file paths are used
-        as-is regardless of *stackup_path*. Returns (vol, layer_names,
-        layer_slices, visual_entries) — the same shape `_apply_gerber_volume`
-        expects. Shared by `loadGerberStackup` (JSON file) and the Gerber
-        Stackup Editor (table-built config).
+        Thin MainWin-side wrapper around the pure
+        `stackup_voxelize.voxelize_stackup_config` (no Qt dependency, directly
+        testable). Returns (vol, layer_names, layer_slices, visual_entries) --
+        the same shape `_apply_gerber_volume` expects -- and stashes the mm/voxel
+        spacing (and, if requested, the ground-truth material-ID volume) on
+        `self` for reuse by registration/label-transfer. Shared by
+        `loadGerberStackup` (JSON file), the Gerber Stackup Editor, and the
+        simulated-X-ray/AM-decomposition demo paths.
         """
-        if config.resolution_xy <= 0 or config.resolution_z <= 0:
-            raise ValueError("resolution_xy and resolution_z must both be > 0")
-
-        rasterizer = PyGerberRasterizer(dpi=config.dpi)
-        substrate_mat = self._material_or_error(config.substrate_material)
-        air_mat = self._material_or_error("AIR")
-
-        stackup = []
-        visual_entries = []
-        layer_names = []
-        layer_slices = []
-        z_cursor = 0
-
-        for layer_cfg in config.layers:
-            layer_path = config.resolve_layer_path(stackup_path, layer_cfg.file)
-            if not layer_path.exists():
-                raise FileNotFoundError(
-                    f"Gerber file for layer '{layer_cfg.name}' not found: {layer_path}"
-                )
-
-            with open(layer_path, "r") as f:
-                content = f.read()
-            mask = rasterizer.rasterize(content)
-            if np.max(mask) == 0:
-                raise ValueError(
-                    f"Layer '{layer_cfg.name}' produced an empty raster mask."
-                )
-
-            layer = GerberLayer(layer_cfg.name)
-            layer.raster_mask = mask
-
-            h_px, w_px = mask.shape
-            width_mm = w_px / (config.dpi / 25.4)
-            height_mm = h_px / (config.dpi / 25.4)
-            layer.update_bounds(0, 0)
-            layer.update_bounds(width_mm, height_mm)
-
-            feature_mat = self._material_or_error(layer_cfg.feature_material)
-            bg_mat = self._material_or_error(layer_cfg.background_material)
-            stackup.append((layer, layer_cfg.thickness, feature_mat, bg_mat))
-
-            layer_num_slices = max(
-                1, int(np.round(layer_cfg.thickness / config.resolution_z))
+        vol, layer_names, layer_slices, visual_entries, spacing_mm, material_ids = (
+            voxelize_stackup_config(
+                config, stackup_path, return_material_ids=return_material_ids
             )
-            layer_names.append(layer_cfg.name)
-            layer_slices.append(np.arange(z_cursor, z_cursor + layer_num_slices))
-            z_cursor += layer_num_slices
-            visual_entries.append(
-                {
-                    "name": layer_cfg.name,
-                    "is_substrate": False,
-                    "num_slices": layer_num_slices,
-                    "color": layer_cfg.color,
-                }
-            )
-
-            if layer_cfg.gap > 0:
-                substrate_name = f"{layer_cfg.name}_substrate"
-                substrate_layer = GerberLayer(substrate_name)
-                substrate_layer.update_bounds(0, 0)
-                substrate_layer.update_bounds(width_mm, height_mm)
-                stackup.append(
-                    (substrate_layer, layer_cfg.gap, substrate_mat, substrate_mat)
-                )
-
-                gap_slices = max(1, int(np.round(layer_cfg.gap / config.resolution_z)))
-                layer_names.append(substrate_name)
-                layer_slices.append(np.arange(z_cursor, z_cursor + gap_slices))
-                z_cursor += gap_slices
-                visual_entries.append(
-                    {
-                        "name": substrate_name,
-                        "is_substrate": True,
-                        "num_slices": gap_slices,
-                        "color": (80, 80, 80, 10),
-                    }
-                )
-
-        vox = Voxelizer(
-            resolution_xy=config.resolution_xy,
-            resolution_z=config.resolution_z,
         )
-        vol = vox.voxelize_stackup(stackup, air_mat)
+        self._gerber_voxel_spacing_mm = spacing_mm
+        if return_material_ids:
+            # Voxelizer returns (Z, H, W) -- move to (H, W, Z) to match every
+            # other "_hwz"-suffixed Gerber array in this class.
+            self._gerber_material_id_vol_hwz = np.moveaxis(material_ids, 0, -1)
+        # Any previously-accepted registration was fit to the OLD Gerber
+        # geometry -- invalidate it so a stale transform can't silently be
+        # applied to newly-(re)voxelized data via transferGerberLabels.
+        self._registration_transform = None
+        self._registration_moving_spacing = None
+        self._registration_fixed_spacing = None
+        self._registration_fixed_shape = None
         return vol, layer_names, layer_slices, visual_entries
 
     @bind(file=dict(type="file", nameFilter="Stackup Files (*.json);;All Files (*)", value=""))
@@ -751,7 +720,7 @@ class MainWin(QtWidgets.QMainWindow):
         try:
             config = StackupConfig.from_json(stackup_path)
             vol, layer_names, layer_slices, visual_entries = self._voxelize_stackup(
-                config, stackup_path
+                config, stackup_path, return_material_ids=True
             )
             self._apply_gerber_volume(
                 vol,
@@ -812,7 +781,7 @@ class MainWin(QtWidgets.QMainWindow):
     def _voxelizeStackupFromEditor(self, config: StackupConfig, stackup_path: Path):
         try:
             vol, layer_names, layer_slices, visual_entries = self._voxelize_stackup(
-                config, stackup_path
+                config, stackup_path, return_material_ids=True
             )
             self._apply_gerber_volume(
                 vol,
@@ -830,6 +799,12 @@ class MainWin(QtWidgets.QMainWindow):
         """Simulate a CT reconstruction of *config* and show it in the LEFT pane."""
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
+            # Not return_material_ids=True: this path only ever feeds the LEFT
+            # pane (simulated "real CT" preview) via model.setCube below, never
+            # `_apply_gerber_volume` -- so it must NOT touch
+            # `_gerber_material_id_vol_hwz`, or that label volume would silently
+            # describe a different config than whatever `_gerber_intensity_hwz`
+            # (the RIGHT-pane Gerber ground truth) currently holds.
             vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
                 config, stackup_path
             )
@@ -838,6 +813,7 @@ class MainWin(QtWidgets.QMainWindow):
 
             self._current_rgba_base_left = None
             self.model.setCube(sim_hwz)
+            self.model.setSpacing(*self._gerber_voxel_spacing_mm)
             self.viewer_3d_left.setDataCube(sim_hwz)
             self.viewer_3d_left.resetCamera()
         except Exception as e:
@@ -858,6 +834,10 @@ class MainWin(QtWidgets.QMainWindow):
         error dialog) on failure."""
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
+            # Not return_material_ids=True -- same reasoning as
+            # _simulateXrayFromEditor: this path never touches
+            # `_apply_gerber_volume`/`_gerber_intensity_hwz`, so it must not
+            # touch `_gerber_material_id_vol_hwz` either.
             vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
                 config, stackup_path
             )
@@ -1036,6 +1016,145 @@ class MainWin(QtWidgets.QMainWindow):
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load phantom demo:\n{e}")
+
+    def setRealCTSpacing(self):
+        dlg = SpacingDialog(self.model.spacing_xyz, parent=self)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            self.model.setSpacing(*dlg.spacing())
+
+    def openRegistrationTool(self):
+        if self._gerber_intensity_hwz is None or self._gerber_voxel_spacing_mm is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Gerber Volume",
+                "Load/voxelize a Gerber stackup first to enable registration.",
+            )
+            return
+        if self.model.dataCube is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Real CT Data",
+                "Load real CT data first to enable registration.",
+            )
+            return
+        if not self.model._spacing_confirmed:
+            proceed = QtWidgets.QMessageBox.question(
+                self, "Real CT Spacing Not Set",
+                "Real CT voxel spacing hasn't been confirmed for the "
+                "currently loaded data -- it's still using the "
+                "1.0mm/voxel placeholder default. Registration will be "
+                "physically meaningless until you set it via "
+                "'Set Real CT Voxel Spacing...'.\n\nProceed anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if proceed != QtWidgets.QMessageBox.Yes:
+                return
+
+        # No `parent=` here, matching RotateWindow's convention elsewhere in
+        # this file: a GLViewWidget-based top-level window parented to a live
+        # MainWin appears to share/break its GL rendering surface, leaving it
+        # blank -- confirmed via manual testing.
+        win = RegistrationWindow(
+            self._gerber_intensity_hwz,
+            self._gerber_voxel_spacing_mm,
+            self.model.dataCube,
+            self.model.spacing_xyz,
+        )
+        self._registrationWindow = win  # keep a reference so it isn't garbage collected
+        win.sigTransformAccepted.connect(self._onRegistrationAccepted)
+        win.show()
+
+    def _onRegistrationAccepted(self, transform: RigidScaleTransform):
+        self._registration_transform = transform
+        self._registration_moving_spacing = self._gerber_voxel_spacing_mm
+        self._registration_fixed_spacing = self.model.spacing_xyz
+        self._registration_fixed_shape = self.model.dataCube.shape
+        QtWidgets.QMessageBox.information(
+            self, "Registration Accepted",
+            f"Transform stored: tx={transform.tx:.3f}mm ty={transform.ty:.3f}mm "
+            f"tz={transform.tz:.3f}mm rot_z={transform.rot_z_deg:.2f}deg "
+            f"scale={transform.scale:.3f}",
+        )
+
+    def transferGerberLabels(self):
+        if self._registration_transform is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Registration",
+                "Use 'Register Gerber to Real CT...' and accept a transform first.",
+            )
+            return
+        if self._gerber_material_id_vol_hwz is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Material Labels",
+                "Re-voxelize the Gerber stackup with material-ID labels first "
+                "(e.g. via the synthetic registration demo, or a future "
+                "'voxelize with labels' action).",
+            )
+            return
+        if self.model.dataCube is None:
+            QtWidgets.QMessageBox.information(
+                self, "No Real CT Data", "Load real CT data first."
+            )
+            return
+        if (
+            self.model.dataCube.shape != self._registration_fixed_shape
+            or self.model.spacing_xyz != self._registration_fixed_spacing
+        ):
+            QtWidgets.QMessageBox.information(
+                self, "Registration Out Of Date",
+                "The real CT data or its voxel spacing changed since this "
+                "transform was accepted. Use 'Register Gerber to Real CT...' "
+                "again before transferring labels.",
+            )
+            return
+
+        labels_hwz = resample_labels(
+            self._gerber_material_id_vol_hwz,
+            self._registration_moving_spacing,
+            self.model.dataCube.shape,
+            self._registration_fixed_spacing,
+            self._registration_transform,
+        )
+        rgba = colorize_material_labels(np.moveaxis(labels_hwz, -1, 0))
+
+        self._current_rgba_base_left = rgba
+        self.model.setRGBACube(self.model.dataCube, rgba)
+        threshold = self.threshSlider_left.value() / 100.0
+        tf = self.opacitySlider_left.value() / 2.0
+        self.viewer_3d_left.setRGBADataCube(self._apply_rgba_controls(rgba, threshold, tf))
+        self.viewer_3d_left.resetCamera()
+        self.materialLegendWidget.setVisible(True)
+        self.amLegendBtn.setChecked(True)
+
+    def _loadSyntheticRegistrationDemo(self):
+        """Dev/debug helper: load a known-ground-truth misaligned Gerber/CT
+        pair (built from the already-verified simulated-CT bridge) so the
+        Registration tool can be exercised and checked against a known
+        answer, since no real CT scan with a matching Gerber design exists
+        yet to validate against."""
+        from ..tests.fixtures import make_synthetic_pair
+
+        pair = make_synthetic_pair()
+
+        self._current_rgba_base_left = None
+        self.model.setCube(pair["misaligned_ct_hwz"])
+        self.model.setSpacing(*pair["fixed_spacing"])
+        self.viewer_3d_left.setDataCube(pair["misaligned_ct_hwz"])
+        self.viewer_3d_left.resetCamera()
+
+        self._gerber_intensity_hwz = pair["aligned_ct_hwz"]
+        self._gerber_voxel_spacing_mm = pair["gerber_spacing"]
+        self._gerber_material_id_vol_hwz = pair["gerber_material_ids_hwz"]
+        self.viewer_3d_right.setDataCube(pair["aligned_ct_hwz"])
+        self.viewer_3d_right.resetCamera()
+
+        t = pair["known_transform"]
+        QtWidgets.QMessageBox.information(
+            self, "Synthetic Registration Demo Loaded",
+            "Known answer (aligns RIGHT onto LEFT):\n"
+            f"tx={t.tx:.3f}mm  ty={t.ty:.3f}mm  tz={t.tz:.3f}mm\n"
+            f"rot_z={t.rot_z_deg:.2f}deg  scale={t.scale:.3f}\n\n"
+            "Open 'Register Gerber to Real CT...' and dial the sliders to match.",
+        )
 
     def fixRotation(self):
         win = RotateWindow(self.model.dataCube)

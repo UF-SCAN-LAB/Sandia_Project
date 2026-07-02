@@ -3,7 +3,10 @@ import numpy as np
 import cv2 as cv
 from typing import List, Tuple
 from .gerber_utils import GerberLayer
-from .materials import MaterialProperties
+from .materials import MATERIAL_NAMES, MaterialProperties
+
+_MATERIAL_ID_BY_NAME = {name: idx for idx, name in enumerate(MATERIAL_NAMES)}
+
 
 class Voxelizer:
     def __init__(self, resolution_xy: float = 0.01, resolution_z: float = 0.01):
@@ -14,9 +17,10 @@ class Voxelizer:
         self.res_xy = resolution_xy
         self.res_z = resolution_z
 
-    def voxelize_stackup(self, 
-                         layers: List[Tuple[GerberLayer, float, MaterialProperties, MaterialProperties]], 
-                         subplot_material: MaterialProperties) -> np.ndarray: # subplot arg kept for compatibility but not used if layers have bg
+    def voxelize_stackup(self,
+                         layers: List[Tuple[GerberLayer, float, MaterialProperties, MaterialProperties]],
+                         subplot_material: MaterialProperties,
+                         return_material_ids: bool = False): # subplot arg kept for compatibility but not used if layers have bg
         
         # 1. Determine Stackup Dimensions
         min_x, min_y = float('inf'), float('inf')
@@ -63,6 +67,7 @@ class Voxelizer:
         print(f"Voxel Grid Size: {w_px}x{h_px} (XY) - using res {self.res_xy} mm/px")
 
         volume_slices = []
+        label_slices = []
 
         for gl, thickness, feat_mat, bg_mat in layers:
             num_slices = int(np.round(thickness / self.res_z))
@@ -130,15 +135,39 @@ class Voxelizer:
             # Apply Materials
             slice_z = np.full((h_px, w_px), bg_mat.z_eff, dtype=np.float32)
             slice_rho = np.full((h_px, w_px), bg_mat.electron_density, dtype=np.float32)
-            
+
             feat_mask_bool = (mask > 128)
             slice_z[feat_mask_bool] = feat_mat.z_eff
             slice_rho[feat_mask_bool] = feat_mat.electron_density
-            
+
             combined_slice = np.stack([slice_z, slice_rho], axis=-1)
-            
+
+            if return_material_ids:
+                bg_id = self._material_id(bg_mat)
+                feat_id = self._material_id(feat_mat)
+                label_slice = np.full((h_px, w_px), bg_id, dtype=np.int32)
+                label_slice[feat_mask_bool] = feat_id
+            else:
+                label_slice = None
+
             for _ in range(num_slices):
                 volume_slices.append(combined_slice)
-                
-        volume = np.stack(volume_slices, axis=0) 
-        return volume
+                if return_material_ids:
+                    label_slices.append(label_slice)
+
+        volume = np.stack(volume_slices, axis=0)
+        if not return_material_ids:
+            return volume
+        material_id_volume = np.stack(label_slices, axis=0)
+        return volume, material_id_volume
+
+    @staticmethod
+    def _material_id(mat: MaterialProperties) -> int:
+        idx = _MATERIAL_ID_BY_NAME.get(mat.name.upper())
+        if idx is None:
+            available = ", ".join(MATERIAL_NAMES)
+            raise ValueError(
+                f"Material '{mat.name}' is not a MATERIALS_DB entry -- ground-truth "
+                f"material-ID labeling requires one of: {available}."
+            )
+        return idx

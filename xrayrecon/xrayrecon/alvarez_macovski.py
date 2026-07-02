@@ -24,7 +24,7 @@ import numpy as np
 from scipy.interpolate import griddata
 from scipy.optimize import fsolve
 
-from .materials import MATERIALS_DB, MATERIAL_COLORS
+from .materials import MATERIALS_DB, MATERIAL_COLORS, MATERIAL_NAMES
 from skimage.transform import iradon, radon
 
 PE_EXPONENT = 3.8
@@ -264,7 +264,6 @@ def colorize_volume(scalar_vol: np.ndarray, cmap_name: str, background_frac: flo
 # as a lookup table: classify each voxel's noisy AM-recovered (Z_eff, rho_e)
 # by nearest match, to get an interpretable approximate material label.
 
-MATERIAL_NAMES: list[str] = sorted(MATERIALS_DB.keys())
 _REFERENCE_ZEFF = np.array([MATERIALS_DB[n].z_eff for n in MATERIAL_NAMES])
 _REFERENCE_RHOE = np.array([MATERIALS_DB[n].electron_density for n in MATERIAL_NAMES])
 # Normalize each axis by its own dynamic range across the reference materials
@@ -297,8 +296,19 @@ def colorize_by_material(zeff_vol: np.ndarray, rhoe_vol: np.ndarray) -> np.ndarr
     in contrast to the continuous Z_eff/rho_e colormaps.
     """
     labels = classify_material_volume(zeff_vol, rhoe_vol)
-    z_depth, h, w = labels.shape
+    return colorize_material_labels(labels)
+
+
+def colorize_material_labels(label_vol: np.ndarray) -> np.ndarray:
+    """Colorize an exact (Z, H, W) material-ID label volume -- e.g. the
+    ground-truth labels `Voxelizer.voxelize_stackup(return_material_ids=True)`
+    produces from known stackup materials, as opposed to `classify_material_volume`'s
+    nearest-match guess for noisy real/AM-recovered data. Same MATERIAL_NAMES
+    index convention as `classify_material_volume`, so labels from either
+    source colorize identically.
+    """
+    z_depth, h, w = label_vol.shape
     rgba_zhw = np.zeros((z_depth, h, w, 4), dtype=np.uint8)
     for idx, name in enumerate(MATERIAL_NAMES):
-        rgba_zhw[labels == idx] = MATERIAL_COLORS[name]
+        rgba_zhw[label_vol == idx] = MATERIAL_COLORS[name]
     return np.moveaxis(rgba_zhw, 0, 2)  # -> (H, W, Z, 4)

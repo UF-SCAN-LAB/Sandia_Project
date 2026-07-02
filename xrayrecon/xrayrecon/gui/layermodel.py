@@ -16,6 +16,7 @@ from xrayrecon.layerseg import layerInfoForWindow
 class LayerModel(QtCore.QObject):
     sigLayerUpdated = QtCore.Signal(int, object)  # row number, resulting 2d image
     sigCubeChanged = QtCore.Signal()
+    sigSpacingChanged = QtCore.Signal()
     NO_METRIC = None
 
     def __init__(
@@ -32,6 +33,15 @@ class LayerModel(QtCore.QObject):
             dataCube = performAllCorrections(dataCube)
         self.dataCube = self.forceDepthToLastAx(dataCube)
         self.rgbaCube: np.ndarray | None = None  # (H, W, Z, 4) uint8, or None for grayscale
+        # mm/voxel (x, y, z); (1.0, 1.0, 1.0) means "unitless voxel space" --
+        # real CT loaders have no way to know true physical spacing, so this
+        # must be set explicitly (e.g. via SpacingDialog) before it's meaningful.
+        self.spacing_xyz: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        # True only once setSpacing() has been called for the CURRENTLY loaded
+        # cube -- setCube/setRGBACube reset this whenever a new cube comes in,
+        # so callers (e.g. registration) can tell "genuinely confirmed 1mm
+        # spacing" apart from "never confirmed, still the placeholder default".
+        self._spacing_confirmed: bool = False
         self.metricInfo: QtWidgets.QWidget | None = self.NO_METRIC
 
         if layerInfo is None:
@@ -62,12 +72,16 @@ class LayerModel(QtCore.QObject):
         for k, v in zip(axs + [missingAx], range(3)):
             self.axMapping[k] = v
         new_cube = self.dataCube.transpose(axNums)
+        # Permute spacing_xyz the same way as the data: new axis i is old
+        # axis axNums[i], so spacing must follow the same relabeling or it
+        # silently describes the wrong axis for anisotropic voxel spacing.
+        self.spacing_xyz = tuple(self.spacing_xyz[a] for a in axNums)
         if self.rgbaCube is not None:
             # Keep rgbaCube in its original (H, W, Z, 4) orientation so that
             # layerDf Z-slices always reference the original depth axis correctly.
-            self.setRGBACube(new_cube, self.rgbaCube)
+            self.setRGBACube(new_cube, self.rgbaCube, preserve_spacing=True)
         else:
-            self.setCube(new_cube)
+            self.setCube(new_cube, preserve_spacing=True)
 
     def parseIndSliceCsv(self, csvFname: Union[Path, str]):
         layerDf = pd.read_csv(csvFname)
@@ -107,10 +121,12 @@ class LayerModel(QtCore.QObject):
             )
         return layerInfo
 
-    def setCube(self, dataCube: np.ndarray):
+    def setCube(self, dataCube: np.ndarray, preserve_spacing: bool = False):
         self.rgbaCube = None
         self._resetLayerInfoIfDepthChanged(dataCube)
         self.dataCube = dataCube
+        if not preserve_spacing:
+            self._spacing_confirmed = False
         self.sigCubeChanged.emit()
 
     def _resetLayerInfoIfDepthChanged(self, newCube: np.ndarray):
@@ -127,11 +143,20 @@ class LayerModel(QtCore.QObject):
         self.tblModel.addDfRows(layerInfo)
         self.layerDf = self.tblModel.dataDf
 
-    def setRGBACube(self, dataCube: np.ndarray, rgbaCube: np.ndarray):
+    def setSpacing(self, dx: float, dy: float, dz: float):
+        self.spacing_xyz = (dx, dy, dz)
+        self._spacing_confirmed = True
+        self.sigSpacingChanged.emit()
+
+    def setRGBACube(
+        self, dataCube: np.ndarray, rgbaCube: np.ndarray, preserve_spacing: bool = False
+    ):
         """Set grayscale + RGBA cubes atomically so resetItems sees both."""
         self._resetLayerInfoIfDepthChanged(dataCube)
         self.dataCube = dataCube
         self.rgbaCube = rgbaCube
+        if not preserve_spacing:
+            self._spacing_confirmed = False
         self.sigCubeChanged.emit()
 
     def applyProcess(

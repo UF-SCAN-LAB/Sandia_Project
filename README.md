@@ -1,8 +1,11 @@
 # Xray Reconstruction and Layer Segmentation Tool
 ![Graphical interface](./xrayrecon/interface.jpg)
 
-A tool for converting 3D X-ray PCB volumes into 2D layer renderings. Individual
-layers can be annotated through [S3A](https://gitlab.com/s3a/s3a) to indicate
+A tool for working with 3D X-ray CT volumes of Printed Circuit Boards (PCBs).
+It loads real CT data and/or a Gerber PCB design, renders both in a
+dual-pane 3D viewer, and can register the Gerber model's known geometry onto
+real CT data to auto-label materials voxel-by-voxel. Individual layers can
+also be annotated through [S3A](https://gitlab.com/s3a/s3a) to indicate
 netlist-specific information.
 
 ## Documentation
@@ -16,7 +19,8 @@ cd Sandia_Project
 pip install -e ./xrayrecon
 ```
 
-Dependencies: PyQt5, PyQtGraph, S3A, NumPy, SciPy, OpenCV, fire.
+Dependencies: PyQt5, PyQtGraph, qtextras, S3A, NumPy, SciPy, scikit-image,
+OpenCV, pandas, matplotlib, Pillow, pygerber, tifffile, fire.
 
 ## Running the App
 ```bash
@@ -30,25 +34,72 @@ python -m xrayrecon.main --datafile /path/to/volume.npy
 python -m xrayrecon.main --datafile /path/to/image_dir/
 ```
 
+The toolbar's "Tools" panel also has demo actions that need no data of your
+own: **Load Phantom Demo**, and **Debug: Load Synthetic Registration Demo**
+(loads a known-misaligned Gerber/CT pair so the registration tool can be
+exercised against a known-correct answer).
+
+## Running Tests
+```bash
+cd xrayrecon
+pytest xrayrecon/tests -v
+```
+
+## Key Features
+- **Dual-pane 3D viewer** (`gui/app.py`): real CT data on the left
+  (`viewer_3d_left`), Gerber-derived model on the right (`viewer_3d_right`),
+  each with independent camera/threshold/opacity controls.
+- **Gerber stackup + materials** (`gui/stackup_editor.py`, `stackup.py`,
+  `voxelizer.py`, `materials.py`): assign a material to every Gerber layer
+  and voxelize into a 3D volume.
+- **Registration** (`registration.py`, `gui/registration.py`): a manual
+  5-DOF (XYZ translate + Z-rotation + uniform scale) alignment tool with a
+  live red/green overlay preview, for registering the Gerber model to real
+  CT data.
+- **Label transfer**: once registered, the Gerber model's known per-voxel
+  materials are resampled onto the real CT grid to auto-label it.
+- **Simulated X-ray / CT bridge** (`ct_simulation.py`): a true Radon +
+  filtered-back-projection simulation of a Gerber stackup, for validating
+  registration/label-transfer logic on a perfectly pre-registered pair
+  before tackling real, misaligned CT data.
+- **Alvarez-Macovski dual-energy decomposition** (`alvarez_macovski.py`,
+  `gui/am_plot_window.py`): recovers Z_eff / electron-density per voxel from
+  a simulated dual-energy scan, with volume colorization and material
+  classification against the materials database.
+
 ## Package Structure
 ```
 xrayrecon/
 ├── main.py                  # Entry point; generates phantom data if no file given
 ├── io.py                    # Load .npy files or image directories into 3D arrays
+├── io_spectral.py           # Load spectral/energy-decomposed ("ED") CT data
 ├── layerseg.py              # Layer segmentation via template matching + peak detection
-├── stackup.py               # PCB stackup representation
-├── voxelizer.py             # Convert 2D stackups (Gerber) to 3D voxel grids
-├── convert.py               # Data conversion utilities
-├── materials.py             # Material property definitions
-├── rotation.py              # Volume rotation utilities
-├── emptyslices.py           # Empty-slice detection/removal
-├── gerber_utils.py          # Gerber file parsing helpers
-├── pygerber_integration.py  # Gerber file rasterization via pygerber
+├── stackup.py                # PCB stackup representation (StackupConfig)
+├── stackup_voxelize.py       # Pure (no-Qt) Gerber stackup -> voxel volume pipeline
+├── voxelizer.py               # Convert 2D stackups (Gerber) to 3D voxel grids
+├── convert.py                # Data conversion utilities
+├── materials.py               # Material property definitions (Z_eff, density, colors)
+├── material_seg.py            # Threshold-based material segmentation of a volume
+├── multimaterial.py           # Multi-material config (per-threshold color/material)
+├── registration.py            # Rigid+scale transform, mm-based volume/label resampling
+├── ct_simulation.py           # Radon + FBP simulation of a real CT scan
+├── alvarez_macovski.py        # Dual-energy decomposition, colorization, classification
+├── gerber_utils.py            # Gerber file parsing helpers
+├── pygerber_integration.py    # Gerber file rasterization via pygerber
+├── cubecorrections/
+│   ├── rotation.py            # Volume rotation utilities
+│   └── emptyslices.py         # Empty-slice detection/removal
+├── configs/                   # Example Gerber stackup / multi-material JSON configs
+├── tests/                     # pytest suite (registration math/state, materials, spacing, smoke)
 └── gui/
-    ├── app.py               # MainWin — main window and coordination hub
-    ├── layermodel.py        # LayerModel — holds the data cube and layer metadata
-    ├── layerview.py         # 2D slice visualization
-    ├── view3d.py            # PCBViewer3D — OpenGL 3D volume rendering
-    ├── table.py             # Layer selection table
-    └── helpers.py           # Shared GUI utilities and phantom data generation
+    ├── app.py                # MainWin — main window, dual-pane coordination hub
+    ├── layermodel.py         # LayerModel — data cube, layer metadata, voxel spacing
+    ├── layerview.py          # 2D slice visualization
+    ├── view3d.py             # PCBViewer3D — OpenGL 3D volume rendering
+    ├── table.py              # Layer selection table
+    ├── stackup_editor.py     # Non-modal Gerber layer/material assignment table
+    ├── spacing_dialog.py     # Dialog for entering real-CT voxel spacing (mm/voxel)
+    ├── registration.py       # RegistrationWindow — live overlay manual alignment tool
+    ├── am_plot_window.py     # Alvarez-Macovski ground-truth-vs-recovered comparison plot
+    └── helpers.py            # Shared GUI utilities and phantom data generation
 ```
