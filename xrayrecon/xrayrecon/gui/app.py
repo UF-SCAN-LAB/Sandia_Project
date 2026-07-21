@@ -6,7 +6,7 @@ from typing import Dict
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from qtextras import (
     ButtonCollection,
     EasyWidget,
@@ -50,6 +50,11 @@ from ..alvarez_macovski import (
 from ..registration import RigidScaleTransform, resample_labels
 
 pg.setConfigOption("imageAxisOrder", "row-major")
+
+try:
+    QAction = QtGui.QAction
+except AttributeError:
+    QAction = QtWidgets.QAction
 
 # def find_circles(image: np.ndarray, fgVerts, radius=10, param2='test'):
 
@@ -99,6 +104,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._current_rgba_base_right: np.ndarray | None = None
         self._stackupEditor: StackupEditorWindow | None = None
         self._am_result: dict | None = None
+        self._amPlotWindow: AMPlotWindow | None = None
         # mm/voxel (x, y, z) captured at voxelization time -- discarded by
         # Voxelizer itself, so this is the only place it survives for reuse
         # (e.g. by registration).
@@ -191,6 +197,10 @@ class MainWin(QtWidgets.QMainWindow):
         )
         self.toolsEditor.registerFunction(
             self.loadSophisticatedPcbDemo, name="Load Sophisticated PCB Demo",
+        )
+        self.toolsEditor.registerFunction(
+            self.showCachedAlvarezMacovskiPlot,
+            name="Regenerate Z_eff / rho_e Plot",
         )
         self._buildUi()
 
@@ -438,6 +448,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._plotDock.setObjectName("PlotDock")
         self._plotDock.setWidget(rightPanel)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._plotDock)
+        self._buildViewMenuActions()
 
         children = EasyWidget(
             [leftPanel, centerPanel],
@@ -480,6 +491,43 @@ class MainWin(QtWidgets.QMainWindow):
         self.tbl.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
         )
+
+    def _buildViewMenuActions(self):
+        self.showToolsAction = QAction("Tools", self)
+        self.showToolsAction.setToolTip("Show the Tools panel if it was closed.")
+        self.showToolsAction.triggered.connect(self.showToolsPanel)
+
+        self.showPlotDockAction = QAction("Z_eff / rho_e Dock", self)
+        self.showPlotDockAction.setToolTip(
+            "Show the 2D Z_eff / rho_e plot dock if it was closed."
+        )
+        self.showPlotDockAction.triggered.connect(self.showZeffRhoePlotDock)
+
+        self.regenerateAMPlotAction = QAction("Regenerate Z_eff / rho_e Plot", self)
+        self.regenerateAMPlotAction.setToolTip(
+            "Recreate the Alvarez-Macovski Z_eff / rho_e plot from the cached result."
+        )
+        self.regenerateAMPlotAction.triggered.connect(self.showCachedAlvarezMacovskiPlot)
+
+        viewMenu = self.menuBar().addMenu("View")
+        viewMenu.addAction(self.showToolsAction)
+        viewMenu.addAction(self.showPlotDockAction)
+        viewMenu.addSeparator()
+        viewMenu.addAction(self.regenerateAMPlotAction)
+
+    @staticmethod
+    def _restoreDock(dock: QtWidgets.QDockWidget):
+        dock.show()
+        dock.raise_()
+        dock.setFocus()
+        if dock.isFloating():
+            dock.activateWindow()
+
+    def showToolsPanel(self):
+        self._restoreDock(self._toolsDock)
+
+    def showZeffRhoePlotDock(self):
+        self._restoreDock(self._plotDock)
 
     def _apply_rgba_controls(
         self,
@@ -884,8 +932,38 @@ class MainWin(QtWidgets.QMainWindow):
         if result is None:
             return
         self._am_result = result
-        self._amPlotWindow = AMPlotWindow(result, parent=self)
-        self._amPlotWindow.show()
+        self.showCachedAlvarezMacovskiPlot()
+
+    def showCachedAlvarezMacovskiPlot(self):
+        """Recreate the AM comparison dialog from the most recent result."""
+        if self._am_result is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No AM Result",
+                "Run an Alvarez-Macovski decomposition first.",
+            )
+            return
+
+        if self._amPlotWindow is not None:
+            self._amPlotWindow.close()
+
+        plotWindow = AMPlotWindow(self._am_result, parent=self)
+        self._amPlotWindow = plotWindow
+        try:
+            plotWindow.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
+            )
+        except AttributeError:
+            plotWindow.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+
+        def _forgetPlotWindow():
+            if self._amPlotWindow is plotWindow:
+                self._amPlotWindow = None
+
+        plotWindow.destroyed.connect(_forgetPlotWindow)
+        plotWindow.show()
+        plotWindow.raise_()
+        plotWindow.activateWindow()
 
     def _showAMVolumeIn3D(self, config: StackupConfig, stackup_path: Path):
         """Run the Alvarez-Macovski decomposition across every slice of the
