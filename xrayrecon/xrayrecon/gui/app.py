@@ -192,6 +192,9 @@ class MainWin(QtWidgets.QMainWindow):
         self.toolsEditor.registerFunction(
             self.loadSophisticatedPcbDemo, name="Load Sophisticated PCB Demo",
         )
+        self.toolsEditor.registerFunction(
+            self.loadRealPcbCtDemo, name="Load Real PCB Demo (Gerber + CT)",
+        )
         self._buildUi()
 
     def _build3DPane(
@@ -1083,6 +1086,58 @@ class MainWin(QtWidgets.QMainWindow):
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load PCB demo:\n{e}")
+
+    def loadRealPcbCtDemo(self):
+        """Load genuinely real data on both sides: a real X-ray CT scan
+        (E:\\Data\\20250701_PCB2, downsampled) into the left pane, and a real
+        Gerber PCB design (E:\\git\\AltiumGerberX2, board 'PCB1') into the
+        right pane.
+
+        NOT a confirmed registered pair: the "PCB1"/"PCB2" naming does not by
+        itself establish these are the same physical board, so this loads
+        them side by side as independent real data rather than claiming an
+        alignment that hasn't been verified.
+        """
+        from ..real_pcb_demo import load_real_pcb_ct
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(
+            "Loading real CT scan (downsampling ~1375 slices, this can take a while)..."
+        )
+        QtWidgets.QApplication.processEvents()
+        try:
+            ct_zhw = load_real_pcb_ct()
+            ct_hwz = np.moveaxis(ct_zhw, 0, -1)
+
+            self._current_rgba_base_left = None
+            self.model.setCube(ct_hwz)
+            self.viewer_3d_left.setDataCube(ct_hwz)
+            self.viewer_3d_left.resetCamera()
+
+            self.statusBar().showMessage("Loading real Gerber PCB stackup...")
+            QtWidgets.QApplication.processEvents()
+            gerber_cfg = (
+                Path(__file__).resolve().parents[2] / "configs" / "altium_gerberx2_stackup.json"
+            )
+            self.loadGerberStackup(gerber_cfg)
+
+            self.statusBar().showMessage("Real PCB demo loaded.", 5000)
+            QtWidgets.QMessageBox.information(
+                self, "Real PCB Demo Loaded",
+                f"Left: real CT scan {ct_hwz.shape} (E:\\Data\\20250701_PCB2, downsampled).\n"
+                "Right: real Gerber PCB (E:\\git\\AltiumGerberX2, board 'PCB1').\n\n"
+                "Note: these are NOT a confirmed registered pair -- shown side "
+                "by side as independent real data, not aligned. Real voxel "
+                "spacing for the CT scan is also unknown -- set it via "
+                "'Set Real CT Voxel Spacing...' before registering.",
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.statusBar().clearMessage()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load real PCB demo:\n{e}")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def setRealCTSpacing(self):
         dlg = SpacingDialog(self.model.spacing_xyz, parent=self)
