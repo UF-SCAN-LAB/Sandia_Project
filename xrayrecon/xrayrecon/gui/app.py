@@ -94,7 +94,7 @@ class MainWin(QtWidgets.QMainWindow):
         self.dataCube = self.model.dataCube
         self.viewer = LayerView(self.model)
         # Left pane: real CT / multi-material data. Right pane: Gerber-derived model.
-        self.viewer_3d_left = PCBViewer3D(dataCube)
+        self.viewer_3d_left = PCBViewer3D(self.dataCube)
         self.viewer_3d_right = PCBViewer3D()
         self._gerber_layer_blocks = []
         self._gerber_layer_legend = []

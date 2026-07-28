@@ -6,6 +6,7 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from pyqtgraph.Qt import QtGui, QtWidgets
 from qtextras import EasyWidget
+from skimage.transform import resize
 
 
 class PCBViewer3D(gl.GLViewWidget):
@@ -128,17 +129,22 @@ class PCBViewer3D(gl.GLViewWidget):
     def downsampleData(self, data, highlightIdxs, factor=None):
         if factor is None:
             factor = self.downsampFactor
+        factor = max(1, int(factor))
         self.downsampFactor = factor
-        newSize = np.array(data.shape)
-        newSize //= [factor] * 3
-        outCube = np.zeros(newSize, dtype="uint8")
-        for ii, resizeIdx in enumerate(
-            np.linspace(0, data.shape[-1] - 1, newSize[-1], dtype=int)
-        ):
-            outCube[..., ii] = cv.resize(data[..., resizeIdx], outCube.shape[:2][::-1])
-        # np.save('/home/UFAD/njessurun/Documents/resized.npy', outCube)
+
+        newSize = np.maximum(np.array(data.shape) // factor, 1)
+        outCube = resize(
+            data.astype(np.float32, copy=False),
+            tuple(newSize),
+            order=1,
+            mode="edge",
+            anti_aliasing=True,
+            preserve_range=True,
+        ).astype(np.float32, copy=False)
+
         if highlightIdxs is not None:
-            highlightIdxs = np.unique((highlightIdxs // factor))
+            scale_z = outCube.shape[2] / data.shape[2]
+            highlightIdxs = np.unique(np.floor(highlightIdxs * scale_z).astype(int))
             highlightIdxs = highlightIdxs[highlightIdxs < outCube.shape[2]]
         return outCube, highlightIdxs
 
