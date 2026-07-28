@@ -1,0 +1,37 @@
+{
+  "layers": [
+    {
+      "file": "C:\\Users\\whisk\\Documents\\Scan Lab\\Software\\GBR\\Project1\\PCB1_Copper_Signal_Bot.gbr",
+      "name": "PCB1_Copper_Signal_Bot",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "FR4",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Documents\\Scan Lab\\Software\\GBR\\Project1\\PCB1_Copper_Signal_Top.gbr",
+      "name": "PCB1_Copper_Signal_Top",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "FR4",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    }
+  ],
+  "dpi": 300,
+  "resolution_xy": 0.1,
+  "resolution_z": 0.01,
+  "substrate_material": "FR4",
+  "default_gap_slices": 20
+}

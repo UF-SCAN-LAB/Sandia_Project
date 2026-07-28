@@ -381,7 +381,7 @@ class MainWin(QtWidgets.QMainWindow):
 
         leftPane = self._build3DPane(
             self.viewer_3d_left, "left", self._on3DControlChangedLeft,
-            extra_widgets=[amColorRow],
+            extra_widgets=[amColorRow, self.materialLegendWidget],
         )
         rightPane = self._build3DPane(self.viewer_3d_right, "right", self._on3DControlChangedRight)
 
@@ -455,12 +455,7 @@ class MainWin(QtWidgets.QMainWindow):
             useSplitter=True,
             layout="H",
         )
-        # Extra layer of nesting allows margin to look a bit better.
-        # materialLegendWidget docks below everything else, hidden by
-        # default, shown via the "Legend" toggle button.
-        EasyWidget.buildMainWindow(
-            [children, self.materialLegendWidget], layout="V", window=self
-        )
+        EasyWidget.buildMainWindow(children, window=self)
         self.setWindowTitle("X-ray Reconstruction")
 
         # --- Status bar ---

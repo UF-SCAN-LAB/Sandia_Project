@@ -1,7 +1,8 @@
 import numpy as np
+from pyqtgraph.Qt import QtWidgets
 
 from xrayrecon.gui.app import MainWin
-from xrayrecon.gui.am_plot_window import AMPlotWindow
+from xrayrecon.gui.am_plot_window import AMPlotWindow, MaterialLegendWidget
 from xrayrecon.gui.helpers import phantomSpheres
 
 NEW_PHASE2_ACTIONS = (
@@ -27,6 +28,20 @@ def test_mainwin_registers_phase2_actions(qapp):
     registered = set(win.toolsEditor.nameFunctionMap.keys())
     for action_name in NEW_PHASE2_ACTIONS:
         assert action_name in registered
+
+
+def test_material_legend_stays_compact(qapp):
+    legend = MaterialLegendWidget()
+
+    legend.resize(720, legend.sizeHint().height())
+    legend.show()
+    qapp.processEvents()
+
+    assert legend.maximumWidth() > 10000
+    assert legend.maximumHeight() <= 96
+    assert legend.sizeHint().height() <= 96
+    assert legend._columnCount > 1
+    assert legend.findChild(QtWidgets.QScrollArea) is not None
 
 
 def test_view_menu_restores_closed_plot_and_tools_docks(qapp):

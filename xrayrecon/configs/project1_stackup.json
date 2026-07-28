@@ -1,0 +1,82 @@
+{
+  "layers": [
+    {
+      "file": "PCB1_Legend_Top.gbr",
+      "name": "Legend Top",
+      "thickness": 0.01,
+      "gap": 0.0,
+      "feature_material": "FR4",
+      "background_material": "AIR",
+      "color": [255, 255, 255, 180]
+    },
+    {
+      "file": "PCB1_Paste_Top.gbr",
+      "name": "Paste Top",
+      "thickness": 0.05,
+      "gap": 0.0,
+      "feature_material": "SOLDER",
+      "background_material": "AIR",
+      "color": [200, 200, 0, 200]
+    },
+    {
+      "file": "PCB1_Soldermask_Top.gbr",
+      "name": "Soldermask Top",
+      "thickness": 0.02,
+      "gap": 0.0,
+      "feature_material": "POLYIMIDE",
+      "background_material": "AIR",
+      "color": [30, 130, 76, 150]
+    },
+    {
+      "file": "PCB1_Copper_Signal_Top.gbr",
+      "name": "Copper Signal Top",
+      "thickness": 0.035,
+      "gap": 1.6,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [255, 140, 0, 220]
+    },
+    {
+      "file": "PCB1_Copper_Signal_Bot.gbr",
+      "name": "Copper Signal Bottom",
+      "thickness": 0.035,
+      "gap": 0.0,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [50, 160, 255, 220]
+    },
+    {
+      "file": "PCB1_Soldermask_Bot.gbr",
+      "name": "Soldermask Bottom",
+      "thickness": 0.02,
+      "gap": 0.0,
+      "feature_material": "POLYIMIDE",
+      "background_material": "AIR",
+      "color": [30, 100, 70, 150]
+    },
+    {
+      "file": "PCB1_Paste_Bot.gbr",
+      "name": "Paste Bottom",
+      "thickness": 0.05,
+      "gap": 0.0,
+      "feature_material": "SOLDER",
+      "background_material": "AIR",
+      "color": [180, 180, 20, 200]
+    },
+    {
+      "file": "PCB1_Legend_Bot.gbr",
+      "name": "Legend Bottom",
+      "thickness": 0.01,
+      "gap": 0.0,
+      "feature_material": "FR4",
+      "background_material": "AIR",
+      "color": [220, 220, 220, 160]
+    }
+  ],
+  "gerber_dir": "C:\\Users\\whisk\\Documents\\Scan Lab\\Software\\GBR\\Project1",
+  "dpi": 300,
+  "resolution_xy": 0.05,
+  "resolution_z": 0.02,
+  "substrate_material": "FR4",
+  "default_gap_slices": 20
+}
