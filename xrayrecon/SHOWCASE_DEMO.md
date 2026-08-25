@@ -35,6 +35,21 @@ ALUMINUM, ALUMINA, and TUNGSTEN labels from the canonical material table.
 6. Click **Accept** only after reviewing the overlay. Label transfer remains an
    explicit subsequent action.
 
+## Z-effective and electron-density walkthrough
+
+1. Return to the main workspace after loading the showcase.
+2. In **Tools**, choose **Run Showcase Z-effective / Electron Density**.
+3. The Alvarez-Macovski component decomposes the same `96 x 128 x 24`
+   rectangular material volume; no separate phantom is substituted.
+4. Use **AM Color: Z_eff**, **rho_e**, and **Material** to compare the three
+   views in the left pane. The right pane retains the canonical Gerber labels.
+5. Inspect the comparison component for ground truth beside recovered output.
+
+The numerical result preserves raw `zeff_recovered` and `rhoe_recovered`
+arrays. Displayed property maps use separately named material-regularized
+arrays, which suppress high-Z filtered-back-projection streaks in neighboring
+low-Z FR4 while keeping the approximation explicit.
+
 The ground-truth transform that aligns the right model onto the left scan is
 `tx=0.55 mm`, `ty=-0.45 mm`, `tz=0.12 mm`, `rotation=4 degrees`, and
 `scale=1.025`.

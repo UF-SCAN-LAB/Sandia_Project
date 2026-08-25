@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+import xrayrecon.gui.app as app_module
 from xrayrecon.gui.app import MainWin
 from xrayrecon.gui.registration import RegistrationPanel
 from xrayrecon.gui.helpers import phantomSpheres
@@ -54,6 +55,7 @@ def test_showcase_loads_material_view_and_named_layer_bands(qapp, monkeypatch):
     assert win._current_rgba_base_right.shape == win._gerber_intensity_hwz.shape + (4,)
     assert win._current_rgba_base_right.dtype == np.uint8
     assert win._gerber_material_id_vol_hwz.shape == (96, 128, 24)
+    assert win._showcase_am_volume_zhw2.shape == (24, 96, 128, 2)
     assert win.model.layerDf["Layer Name"].tolist() == [
         "Bottom copper routing",
         "FR4 core and plated vias",
@@ -61,6 +63,55 @@ def test_showcase_loads_material_view_and_named_layer_bands(qapp, monkeypatch):
         "Mounted components",
     ]
     assert any(title == "PCB Registration Showcase Loaded" for title, _ in seen)
+
+
+@pytest.mark.gui
+@pytest.mark.integration
+def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch):
+    win, seen = _registration_ready_mainwin(monkeypatch)
+    expected_shape = win._showcase_am_volume_zhw2.shape[:3]
+    called = {}
+
+    def fake_decomposition(volume, num_angles):
+        called["shape"] = volume.shape
+        called["angles"] = num_angles
+        zeff = volume[..., 0].astype(np.float32)
+        rhoe = volume[..., 1].astype(np.float32)
+        labels = np.moveaxis(win._gerber_material_id_vol_hwz, -1, 0)
+        return {
+            "zeff_ground_truth": zeff,
+            "rhoe_ground_truth": rhoe,
+            "zeff_recovered": zeff,
+            "rhoe_recovered": rhoe,
+            "zeff_regularized": zeff,
+            "rhoe_regularized": rhoe,
+            "material_labels_recovered": labels,
+        }
+
+    class FakePlotWindow:
+        def __init__(self, result, parent=None):
+            self.result = result
+            self.parent = parent
+            self.was_shown = False
+
+        def show(self):
+            self.was_shown = True
+
+    monkeypatch.setattr(app_module, "simulate_am_volume", fake_decomposition)
+    monkeypatch.setattr(app_module, "AMPlotWindow", FakePlotWindow)
+
+    win.runPcbShowcaseAM()
+
+    assert called == {"shape": (24, 96, 128, 2), "angles": 64}
+    assert win._am_result["zeff_regularized"].shape == expected_shape
+    assert win._amPlotWindow.was_shown
+    assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
+    assert any(title == "Showcase AM Decomposition Complete" for title, _ in seen)
+
+    win.amColorRhoeBtn.click()
+    assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
+    win.amColorMaterialBtn.click()
+    assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
 
 
 @pytest.mark.gui

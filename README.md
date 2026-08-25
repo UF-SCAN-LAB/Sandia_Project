@@ -43,6 +43,13 @@ known misalignment, so the complete embedded registration and label-transfer
 workflow can be exercised against a known-correct answer. See the
 [PCB Showcase Walkthrough](./xrayrecon/SHOWCASE_DEMO.md).
 
+After loading the showcase, **Run Showcase Z-effective / Electron Density**
+runs the Alvarez-Macovski component on the same canonical material ground
+truth. The AM Color controls then switch the left pane among recovered
+Z-effective, electron-density, and approximate-material views while the
+comparison component shows ground truth beside material-regularized recovery.
+Raw recovered property arrays remain available for quantitative audit.
+
 ## Running Tests
 ```bash
 python -m pytest

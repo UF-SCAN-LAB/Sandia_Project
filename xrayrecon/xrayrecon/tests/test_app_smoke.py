@@ -6,6 +6,7 @@ NEW_PHASE2_ACTIONS = (
     "Register Gerber to Real CT...",
     "Transfer Gerber Labels to Real CT",
     "Load PCB Registration Showcase",
+    "Run Showcase Z-effective / Electron Density",
 )
 
 

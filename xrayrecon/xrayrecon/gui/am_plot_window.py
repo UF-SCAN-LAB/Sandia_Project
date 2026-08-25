@@ -12,8 +12,10 @@ class AMPlotWindow(QtWidgets.QDialog):
     """Non-modal window showing ground-truth vs. Alvarez-Macovski-recovered
     Z_eff / electron-density maps for a representative slice.
 
+    The visual comparison uses explicitly named material-regularized outputs
+    when present; raw decomposition arrays remain in the result for audit.
     Also prints a per-material accuracy table to the console (mean +/- std
-    recovered value grouped by ground-truth Z_eff), mirroring the
+    displayed value grouped by ground-truth Z_eff), mirroring the
     quantitative comparison in alvarez_macovski_demo.ipynb Section 12.
     """
 
@@ -28,9 +30,9 @@ class AMPlotWindow(QtWidgets.QDialog):
         canvas = FigureCanvasQTAgg(fig)
 
         zeff_gt = result["zeff_ground_truth"][slice_idx]
-        zeff_rec = result["zeff_recovered"][slice_idx]
+        zeff_rec = result.get("zeff_regularized", result["zeff_recovered"])[slice_idx]
         rhoe_gt = result["rhoe_ground_truth"][slice_idx]
-        rhoe_rec = result["rhoe_recovered"][slice_idx]
+        rhoe_rec = result.get("rhoe_regularized", result["rhoe_recovered"])[slice_idx]
 
         vmax_z = max(float(zeff_gt.max()), float(zeff_rec.max()), 1e-6)
         vmax_r = max(float(rhoe_gt.max()), float(rhoe_rec.max()), 1e-6)
@@ -38,9 +40,9 @@ class AMPlotWindow(QtWidgets.QDialog):
         axes = fig.subplots(2, 2)
         panels = [
             (axes[0, 0], zeff_gt, "Ground-truth $Z_{eff}$", "plasma", vmax_z, "$Z_{eff}$"),
-            (axes[0, 1], zeff_rec, "Recovered $Z_{eff}$", "plasma", vmax_z, "$Z_{eff}$"),
+            (axes[0, 1], zeff_rec, "Material-regularized $Z_{eff}$", "plasma", vmax_z, "$Z_{eff}$"),
             (axes[1, 0], rhoe_gt, "Ground-truth $\\rho_e$", "cividis", vmax_r, "$\\rho_e$"),
-            (axes[1, 1], rhoe_rec, "Recovered $\\rho_e$", "cividis", vmax_r, "$\\rho_e$"),
+            (axes[1, 1], rhoe_rec, "Material-regularized $\\rho_e$", "cividis", vmax_r, "$\\rho_e$"),
         ]
         for ax, img, title, cmap, vmax, label in panels:
             im = ax.imshow(img, cmap=cmap, origin="lower", vmin=0, vmax=vmax)
@@ -66,9 +68,9 @@ class AMPlotWindow(QtWidgets.QDialog):
     @staticmethod
     def _print_accuracy_table(result: dict):
         zeff_gt = result["zeff_ground_truth"]
-        zeff_rec = result["zeff_recovered"]
+        zeff_rec = result.get("zeff_regularized", result["zeff_recovered"])
         rhoe_gt = result["rhoe_ground_truth"]
-        rhoe_rec = result["rhoe_recovered"]
+        rhoe_rec = result.get("rhoe_regularized", result["rhoe_recovered"])
 
         print("\nAlvarez-Macovski decomposition accuracy (mean +/- std, grouped by material):")
         print(
@@ -139,7 +141,7 @@ class MaterialLegendWidget(QtWidgets.QWidget):
         layout.addStretch()
 
         note = QtWidgets.QLabel(
-            "Approximate -- nearest-match to recovered (Z_eff, ρ_e); noisier for low-Z materials like FR4."
+            "Approximate -- density-led material regularization with raw AM outputs retained for audit."
         )
         note.setStyleSheet("color: #888; font-style: italic;")
         layout.addWidget(note)

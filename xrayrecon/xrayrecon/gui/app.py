@@ -34,7 +34,7 @@ from .view3d import PCBViewer3D
 from ..pygerber_integration import PyGerberRasterizer
 from ..gerber_utils import GerberLayer
 from ..voxelizer import Voxelizer
-from ..materials import MATERIALS_DB, get_material
+from ..materials import MATERIALS_DB, get_material, material_labels_to_zeff_rhoe
 from ..stackup import StackupConfig
 from ..stackup_voxelize import voxelize_stackup_config
 from ..multimaterial import MaterialEntry, MultiMaterialConfig
@@ -99,6 +99,8 @@ class MainWin(QtWidgets.QMainWindow):
         self._current_rgba_base_right: np.ndarray | None = None
         self._stackupEditor: StackupEditorWindow | None = None
         self._am_result: dict | None = None
+        self._showcase_am_volume_zhw2: np.ndarray | None = None
+        self._showcase_material_labels_hwz: np.ndarray | None = None
         # mm/voxel (x, y, z) captured at voxelization time -- discarded by
         # Voxelizer itself, so this is the only place it survives for reuse
         # (e.g. by registration).
@@ -185,6 +187,10 @@ class MainWin(QtWidgets.QMainWindow):
         self.toolsEditor.registerFunction(
             self.loadPcbRegistrationShowcase,
             name="Load PCB Registration Showcase",
+        )
+        self.toolsEditor.registerFunction(
+            self.runPcbShowcaseAM,
+            name="Run Showcase Z-effective / Electron Density",
         )
         self.toolsEditor.registerFunction(
             self.loadSophisticatedPcbDemo, name="Load Sophisticated PCB Demo",
@@ -909,15 +915,24 @@ class MainWin(QtWidgets.QMainWindow):
         it into the LEFT 3D pane. No-op if no AM decomposition has run yet."""
         if self._am_result is None:
             return
-        zeff_vol = self._am_result["zeff_recovered"]
-        rhoe_vol = self._am_result["rhoe_recovered"]
+        zeff_vol = self._am_result.get(
+            "zeff_regularized", self._am_result["zeff_recovered"]
+        )
+        rhoe_vol = self._am_result.get(
+            "rhoe_regularized", self._am_result["rhoe_recovered"]
+        )
 
         if self.amColorZeffBtn.isChecked():
             rgba = colorize_volume(zeff_vol, "plasma")
         elif self.amColorRhoeBtn.isChecked():
             rgba = colorize_volume(rhoe_vol, "cividis")
         else:
-            rgba = colorize_by_material(zeff_vol, rhoe_vol)
+            labels = self._am_result.get("material_labels_recovered")
+            rgba = (
+                colorize_material_labels(labels)
+                if labels is not None
+                else colorize_by_material(zeff_vol, rhoe_vol)
+            )
 
         scalar_hwz = np.moveaxis(rhoe_vol, 0, -1)
 
@@ -1271,6 +1286,11 @@ class MainWin(QtWidgets.QMainWindow):
         self._gerber_intensity_hwz = pair.moving_hwz
         self._gerber_voxel_spacing_mm = pair.moving_spacing
         self._gerber_material_id_vol_hwz = pair.moving_labels_hwz
+        self._showcase_material_labels_hwz = pair.moving_labels_hwz
+        self._showcase_am_volume_zhw2 = material_labels_to_zeff_rhoe(
+            np.moveaxis(pair.moving_labels_hwz, -1, 0)
+        )
+        self._am_result = None
         self._registration_session.invalidate("PCB showcase reloaded")
         ground_truth_rgba = colorize_material_labels(
             np.moveaxis(pair.moving_labels_hwz, -1, 0)
@@ -1303,8 +1323,68 @@ class MainWin(QtWidgets.QMainWindow):
             f"rot_z={t.rot_z_deg:.2f}deg  scale={t.scale:.3f}\n\n"
             "Both panes start in Top view for readability. Open "
             "'Register Gerber to Real CT...' to compare the red Gerber and "
-            "green CT overlay, run Suggest, review, and explicitly Accept.",
+            "green CT overlay, run Suggest, review, and explicitly Accept.\n\n"
+            "Choose 'Run Showcase Z-effective / Electron Density' to run the "
+            "Alvarez-Macovski component on the same material ground truth.",
         )
+
+    def runPcbShowcaseAM(self):
+        """Run AM decomposition on the active interpretable PCB showcase."""
+        if (
+            self._showcase_am_volume_zhw2 is None
+            or self._showcase_material_labels_hwz is None
+            or self._gerber_material_id_vol_hwz
+            is not self._showcase_material_labels_hwz
+        ):
+            QtWidgets.QMessageBox.information(
+                self,
+                "PCB Showcase Not Loaded",
+                "Load 'PCB Registration Showcase' before running its "
+                "Z-effective / electron-density decomposition.",
+            )
+            return
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(
+            "Running showcase Alvarez-Macovski decomposition..."
+        )
+        QtWidgets.QApplication.processEvents()
+        try:
+            self._am_result = simulate_am_volume(
+                self._showcase_am_volume_zhw2,
+                num_angles=64,
+            )
+            self._renderAMVolume()
+            self.viewer_3d_left.setCameraTop()
+            self.materialLegendWidget.setVisible(True)
+            self.amLegendBtn.setChecked(True)
+            self._amPlotWindow = AMPlotWindow(self._am_result, parent=self)
+            self._amPlotWindow.show()
+            self.statusBar().showMessage(
+                "Showcase AM decomposition ready: choose Z_eff, rho_e, or Material",
+                10000,
+            )
+            QtWidgets.QMessageBox.information(
+                self,
+                "Showcase AM Decomposition Complete",
+                "Recovered Z-effective and electron-density volumes are ready.\n\n"
+                "The main-window AM Color buttons switch among Z_eff, rho_e, "
+                "and approximate material views. The comparison window shows "
+                "ground truth beside material-regularized recovery; raw "
+                "decomposition arrays remain preserved for quantitative audit.",
+            )
+        except Exception as error:
+            import traceback
+
+            traceback.print_exc()
+            self.statusBar().clearMessage()
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Showcase AM Decomposition Failed",
+                f"The decomposition could not complete:\n{error}",
+            )
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def _loadSyntheticRegistrationDemo(self):
         """Backward-compatible entry point retained for scripts/tests."""

@@ -98,6 +98,11 @@ The central hub of the application. It:
   canonical multi-material labels, recognizable geometry, CT degradation,
   layer metadata, and known transform. Application code does not import from
   `tests`.
+- `materials.material_labels_to_zeff_rhoe` converts those shared canonical
+  labels into the `(Z, H, W, 2)` physical-property input consumed by
+  `alvarez_macovski.simulate_am_volume`. AM results retain raw reconstruction
+  and separately named material-regularized volumes/labels for interpretable
+  display without obscuring quantitative output.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

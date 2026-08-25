@@ -47,6 +47,17 @@ through-vias, fiducials, and passives. Tests also require canonical material
 IDs, meaningful voxel populations, deterministic CT degradation, a known
 alignment score above 0.95, and a bounded suggestion score above 0.80.
 
+The Alvarez-Macovski showcase bridge adds these deterministic requirements:
+
+- canonical labels map exactly to `(Z_eff, electron_density)` properties;
+- rectangular reconstruction preserves the source slice shape;
+- seven representative materials recover median properties within 20%;
+- a component-rich slice achieves electron-density correlation >= 0.90,
+  regularized Z-effective rank correlation >= 0.80, and interior material
+  classification >= 70%;
+- raw and material-regularized recovery remain separately available; and
+- a `slow` full-volume test exercises the complete `96 x 128 x 24` path.
+
 ## Reliability rules
 
 - Use fixed seeds for all random data.
