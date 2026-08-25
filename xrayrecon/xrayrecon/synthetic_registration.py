@@ -319,7 +319,9 @@ def _pcb_showcase_phantom(
     # Map physical material response to a compact CT-like intensity range.
     volume = np.zeros(shape, dtype=np.float32)
     responses = {
-        name: np.log1p(MATERIALS_DB[name].z_eff * MATERIALS_DB[name].electron_density)
+        name: np.log1p(
+            MATERIALS_DB[name].z_eff * MATERIALS_DB[name].mass_density_g_cm3
+        )
         for name in PCB_SHOWCASE_MATERIALS
         if name != "AIR"
     }

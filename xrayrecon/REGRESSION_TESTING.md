@@ -49,14 +49,25 @@ alignment score above 0.95, and a bounded suggestion score above 0.80.
 
 The Alvarez-Macovski showcase bridge adds these deterministic requirements:
 
-- canonical labels map exactly to `(Z_eff, electron_density)` properties;
+- canonical labels map exactly to `(Z_eff, relative electron density to water)`
+  while mass density remains a separate property;
 - rectangular reconstruction preserves the source slice shape;
-- seven representative materials recover median properties within 20%;
+- seven noiseless representative materials recover median properties within 5%;
+- seeded Poisson acquisition is repeatable, noisy high-Z materials remain
+  within 25% Z-effective and 15% electron-density error, and invalid noise
+  parameters are rejected;
 - a component-rich slice achieves electron-density correlation >= 0.90,
   regularized Z-effective rank correlation >= 0.80, and interior material
   classification >= 70%;
-- raw and material-regularized recovery remain separately available; and
-- a `slow` full-volume test exercises the complete `96 x 128 x 24` path.
+- the noisy showcase has median raw electron-density error <= 15%, median
+  regularized Z-effective error <= 20%, and interior classification >= 85%;
+- reduced-angle reconstruction retains >= 85% interior material accuracy;
+- confidence is finite, bounded, deterministic, and its lowest quartile has
+  greater synthetic error than its highest quartile;
+- raw and material-regularized recovery, projection residual, confidence, and
+  relative/absolute electron-density arrays remain separately available; and
+- a `slow` full-volume test exercises the complete `96 x 128 x 24` path in at
+  most 10 seconds on the reference development machine.
 
 ## Reliability rules
 

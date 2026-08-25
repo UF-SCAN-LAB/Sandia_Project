@@ -22,11 +22,16 @@ genuine dual-energy-CT limitation, not a bug.
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import median_filter
+from scipy.ndimage import gaussian_filter, median_filter, sobel
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.optimize import fsolve
 
-from .materials import MATERIALS_DB, MATERIAL_COLORS, MATERIAL_NAMES
+from .materials import (
+    MATERIALS_DB,
+    MATERIAL_COLORS,
+    MATERIAL_NAMES,
+    WATER_ELECTRON_DENSITY_E23_CM3,
+)
 from skimage.transform import iradon, radon
 
 PE_EXPONENT = 3.8
@@ -200,11 +205,113 @@ def _match_reconstruction_shape(
     return output
 
 
-def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
-                        pixel_size_cm: float = 0.01) -> dict:
+def _poisson_log_measurement(
+    line_integral: np.ndarray,
+    photon_count: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return a seeded photon-counting measurement in negative-log space."""
+    transmission = np.exp(-np.asarray(line_integral, dtype=np.float64))
+    measured_counts = rng.poisson(transmission * photon_count)
+    measured_transmission = np.clip(
+        measured_counts / float(photon_count),
+        1.0 / float(photon_count),
+        1.0,
+    )
+    return -np.log(measured_transmission)
+
+
+def _robust_unit_interval(values: np.ndarray) -> np.ndarray:
+    """Robustly map a nonnegative image to [0, 1] without metadata state."""
+    array = np.nan_to_num(np.asarray(values, dtype=np.float32), copy=False)
+    lower, upper = np.percentile(array, (5.0, 95.0))
+    if upper <= lower + 1e-9:
+        maximum = float(array.max())
+        if maximum <= 0:
+            return np.zeros_like(array, dtype=np.float32)
+        lower, upper = 0.0, maximum
+    return np.clip((array - lower) / (upper - lower), 0.0, 1.0).astype(
+        np.float32
+    )
+
+
+def _quality_maps(
+    recon_a1: np.ndarray,
+    recon_a2: np.ndarray,
+    measured_a1: np.ndarray,
+    measured_a2: np.ndarray,
+    theta: np.ndarray,
+    pixel_size_cm: float,
+    target_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate projection inconsistency and reconstruction confidence.
+
+    The residual is calculated by forward-projecting the reconstructed basis
+    images and backprojecting their mismatch with the decomposed AM sinograms.
+    This is equivalent to a reconstruction data-consistency check without
+    redundantly evaluating the expensive polychromatic spectrum model twice.
+    Confidence combines that term with local edge sensitivity and signal
+    strength. It is an interpretable quality indicator, not a probability.
+    """
+    projected_a1 = radon(recon_a1, theta=theta, circle=False) * pixel_size_cm
+    projected_a2 = radon(recon_a2, theta=theta, circle=False) * pixel_size_cm
+    a1_scale = max(float(np.percentile(np.abs(measured_a1), 90)), 1e-6)
+    a2_scale = max(float(np.percentile(np.abs(measured_a2), 90)), 1e-6)
+    ray_residual = np.sqrt(
+        0.5
+        * (
+            ((projected_a1 - measured_a1) / a1_scale) ** 2
+            + ((projected_a2 - measured_a2) / a2_scale) ** 2
+        )
+    )
+    residual_image = _match_reconstruction_shape(
+        iradon(
+            ray_residual,
+            theta=theta,
+            filter_name=None,
+            circle=False,
+        ),
+        target_shape,
+    )
+    residual = _robust_unit_interval(gaussian_filter(residual_image, 1.0))
+
+    zeff = to_zeff(recon_a1, recon_a2)
+    zeff_scale = max(float(np.percentile(zeff, 95)), 1e-6)
+    density_scale = max(float(np.percentile(recon_a2, 95)), 1e-6)
+    edge_energy = np.hypot(
+        sobel(zeff / zeff_scale, axis=0),
+        sobel(zeff / zeff_scale, axis=1),
+    ) + np.hypot(
+        sobel(recon_a2 / density_scale, axis=0),
+        sobel(recon_a2 / density_scale, axis=1),
+    )
+    edge_sensitivity = _robust_unit_interval(gaussian_filter(edge_energy, 0.75))
+    photoelectric_scale = max(float(np.percentile(recon_a1, 95)), 1e-9)
+    # Z_eff is recovered from a1/a2. Confidence therefore requires both basis
+    # channels to carry signal; density alone would overstate confidence in
+    # low-Z regions where the photoelectric coefficient is noise-dominated.
+    signal = np.sqrt(
+        np.clip(recon_a1 / photoelectric_scale, 0.0, 1.0)
+        * np.clip(recon_a2 / density_scale, 0.0, 1.0)
+    )
+    confidence = (
+        np.exp(-1.6 * residual - 0.8 * edge_sensitivity)
+        * (0.2 + 0.8 * signal)
+    )
+    return residual, np.clip(confidence, 0.0, 1.0).astype(np.float32)
+
+
+def simulate_am_volume(
+    vol: np.ndarray,
+    num_angles: int | None = None,
+    pixel_size_cm: float = 0.01,
+    *,
+    photon_count: int | None = None,
+    random_seed: int | None = None,
+) -> dict:
     """Simulate an Alvarez-Macovski dual-energy CT scan of a Voxelizer volume.
 
-    vol: (Z, H, W, 2) = [z_eff, density], as returned by
+    vol: (Z, H, W, 2) = [z_eff, relative electron density to water], as returned by
     Voxelizer.voxelize_stackup(). For each Z slice: convert ground truth to
     (a1, a2), Radon-project at two energies via the polychromatic
     Beer-Lambert forward model, decompose back to (a1_hat, a2_hat) via a
@@ -219,6 +326,10 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
     ~700 in testing, vs. a real max of ~79 for gold) that would otherwise
     dominate the plot's color scale.
 
+    ``photon_count`` enables a seeded Poisson acquisition model. A seed is
+    required for deterministic regression and may not be supplied unless the
+    noise model is enabled.
+
     Returns ground-truth and raw recovered ``(Z, H, W)`` volumes plus
     explicitly named material-regularized properties/labels. Raw outputs
     preserve the direct decomposition for audit. Regularized outputs median-
@@ -226,6 +337,20 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
     material table, providing stable, interpretable demo visualization while
     retaining the approximation as separate data.
     """
+    vol = np.asarray(vol)
+    if vol.ndim != 4 or vol.shape[-1] != 2:
+        raise ValueError("AM volume must have shape (Z, H, W, 2)")
+    if photon_count is not None:
+        if not isinstance(photon_count, (int, np.integer)) or photon_count <= 0:
+            raise ValueError("photon_count must be a positive integer")
+        if random_seed is None:
+            raise ValueError("random_seed is required when photon_count enables noise")
+    elif random_seed is not None:
+        raise ValueError("random_seed requires photon_count to enable noise")
+    if pixel_size_cm <= 0:
+        raise ValueError("pixel_size_cm must be positive")
+
+    rng = np.random.default_rng(random_seed) if photon_count is not None else None
     z_depth, h, w, _ = vol.shape
     if num_angles is None:
         num_angles = max(h, w)
@@ -245,6 +370,8 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
 
     zeff_rec = np.zeros((z_depth, h, w), dtype=np.float32)
     rhoe_rec = np.zeros((z_depth, h, w), dtype=np.float32)
+    projection_residual = np.zeros((z_depth, h, w), dtype=np.float32)
+    confidence = np.zeros((z_depth, h, w), dtype=np.float32)
     decomposition_lut = _build_lut_inverter(a1_max_bound, a2_max_bound)
 
     for z in range(z_depth):
@@ -256,6 +383,9 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
 
         sino_Llo = forward_arr(sino_A1, sino_A2, E_LO, PHI_LO).reshape(sino_A1.shape)
         sino_Lhi = forward_arr(sino_A1, sino_A2, E_HI, PHI_HI).reshape(sino_A1.shape)
+        if photon_count is not None:
+            sino_Llo = _poisson_log_measurement(sino_Llo, photon_count, rng)
+            sino_Lhi = _poisson_log_measurement(sino_Lhi, photon_count, rng)
 
         sino_A1_rec, sino_A2_rec = _decompose_sinogram(
             sino_Llo,
@@ -286,9 +416,32 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
 
         zeff_rec[z] = np.clip(to_zeff(recon_a1, recon_a2), 0, zeff_clip)
         rhoe_rec[z] = np.clip(to_rho_e(recon_a2), 0, rhoe_clip)
+        projection_residual[z], confidence[z] = _quality_maps(
+            recon_a1,
+            recon_a2,
+            sino_A1_rec,
+            sino_A2_rec,
+            theta,
+            pixel_size_cm,
+            (h, w),
+        )
 
     recovered_labels, zeff_regularized, rhoe_regularized = (
         regularize_recovered_material_properties(zeff_rec, rhoe_rec)
+    )
+    # A large disagreement between the direct inversion and the independently
+    # density-led material interpretation is a useful, ground-truth-free sign
+    # that the raw a1/a2 ratio is unstable. Fold it into confidence only after
+    # preserving both raw and regularized arrays as separate outputs.
+    property_disagreement = (
+        np.abs(zeff_rec - zeff_regularized) / max(_ZEFF_SCALE, 1e-9)
+        + np.abs(rhoe_rec - rhoe_regularized) / max(_RHOE_SCALE, 1e-9)
+    )
+    disagreement_penalty = np.exp(
+        -2.5 * _robust_unit_interval(property_disagreement)
+    )
+    confidence = np.clip(confidence * disagreement_penalty, 0.0, 1.0).astype(
+        np.float32
     )
 
     return dict(
@@ -299,6 +452,17 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
         zeff_regularized=zeff_regularized,
         rhoe_regularized=rhoe_regularized,
         material_labels_recovered=recovered_labels,
+        projection_residual=projection_residual,
+        confidence=confidence,
+        rhoe_e23_cm3_ground_truth=(
+            rhoe_gt * WATER_ELECTRON_DENSITY_E23_CM3
+        ).astype(np.float32),
+        rhoe_e23_cm3_recovered=(
+            rhoe_rec * WATER_ELECTRON_DENSITY_E23_CM3
+        ).astype(np.float32),
+        rhoe_e23_cm3_regularized=(
+            rhoe_regularized * WATER_ELECTRON_DENSITY_E23_CM3
+        ).astype(np.float32),
     )
 
 
@@ -377,13 +541,13 @@ def regularize_recovered_material_properties(
     zeff_recovered: np.ndarray,
     rhoe_recovered: np.ndarray,
     *,
-    median_size: int = 3,
-    zeff_weight: float = 0.01,
+    median_size: int = 5,
+    zeff_weight: float = 0.001,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Create stable approximate-material properties without hiding raw AM data.
 
     FBP ringing from very high-Z gold/tungsten can dominate the much smaller
-    low-Z photoelectric coefficient in adjacent FR4 voxels. A 3x3 in-plane
+    low-Z photoelectric coefficient in adjacent FR4 voxels. A 5x5 in-plane
     median on electron density suppresses those isolated streaks. Density is
     the more stable recovered channel, so nearest-reference classification
     uses it as the primary signal and raw Z_eff only as a weak tie-breaker.
