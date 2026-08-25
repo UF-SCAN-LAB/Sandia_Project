@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.ndimage import affine_transform
@@ -61,6 +61,134 @@ class RegistrationProposal:
         if self.score >= 0.45 and self.improvement >= 0.03:
             return "moderate"
         return "low"
+
+
+@dataclass(frozen=True)
+class RegistrationInputSignature:
+    """Identity and physical metadata for one moving/fixed volume pair."""
+
+    moving_id: int
+    moving_shape: tuple[int, int, int]
+    moving_spacing: tuple[float, float, float]
+    fixed_id: int
+    fixed_shape: tuple[int, int, int]
+    fixed_spacing: tuple[float, float, float]
+
+    @staticmethod
+    def _spacing(values) -> tuple[float, float, float]:
+        spacing = tuple(float(value) for value in values)
+        if len(spacing) != 3 or any(not np.isfinite(value) or value <= 0 for value in spacing):
+            raise ValueError("registration spacing must contain three positive finite values")
+        return spacing
+
+    @classmethod
+    def capture(
+        cls,
+        moving: np.ndarray,
+        moving_spacing,
+        fixed: np.ndarray,
+        fixed_spacing,
+    ) -> "RegistrationInputSignature":
+        moving_array = np.asarray(moving)
+        fixed_array = np.asarray(fixed)
+        if moving_array.ndim != 3 or fixed_array.ndim != 3:
+            raise ValueError("registration inputs must both be 3-D volumes")
+        return cls(
+            moving_id=id(moving),
+            moving_shape=tuple(moving_array.shape),
+            moving_spacing=cls._spacing(moving_spacing),
+            fixed_id=id(fixed),
+            fixed_shape=tuple(fixed_array.shape),
+            fixed_spacing=cls._spacing(fixed_spacing),
+        )
+
+
+@dataclass
+class RegistrationSession:
+    """Non-UI registration lifecycle and stale-input protection.
+
+    A session distinguishes the currently edited transform from the last
+    explicitly accepted transform. Configuring an identical volume pair keeps
+    the edit in progress; any new array identity or physical metadata resets it.
+    """
+
+    inputs: RegistrationInputSignature | None = None
+    current_transform: RigidScaleTransform = field(
+        default_factory=RigidScaleTransform.identity
+    )
+    current_score: float | None = None
+    accepted_transform: RigidScaleTransform | None = None
+    accepted_score: float | None = None
+    proposal: RegistrationProposal | None = None
+    dirty: bool = False
+    invalid_reason: str | None = None
+
+    def configure(
+        self,
+        moving: np.ndarray,
+        moving_spacing,
+        fixed: np.ndarray,
+        fixed_spacing,
+    ) -> bool:
+        """Configure inputs, returning True when prior state was reset."""
+        signature = RegistrationInputSignature.capture(
+            moving, moving_spacing, fixed, fixed_spacing
+        )
+        if signature == self.inputs:
+            return False
+        self.inputs = signature
+        self.current_transform = RigidScaleTransform.identity()
+        self.current_score = None
+        self.accepted_transform = None
+        self.accepted_score = None
+        self.proposal = None
+        self.dirty = False
+        self.invalid_reason = None
+        return True
+
+    def update_current(
+        self, transform: RigidScaleTransform, score: float | None = None
+    ) -> None:
+        if self.inputs is None:
+            raise RuntimeError("registration inputs have not been configured")
+        self.current_transform = transform
+        self.current_score = None if score is None else float(score)
+        self.dirty = self.current_transform != self.accepted_transform
+
+    def record_proposal(self, proposal: RegistrationProposal) -> None:
+        self.proposal = proposal
+        self.update_current(proposal.transform, proposal.score)
+
+    def accept(self) -> RigidScaleTransform:
+        if self.inputs is None:
+            raise RuntimeError("registration inputs have not been configured")
+        self.accepted_transform = self.current_transform
+        self.accepted_score = self.current_score
+        self.dirty = False
+        return self.accepted_transform
+
+    def invalidate(self, reason: str) -> None:
+        self.inputs = None
+        self.current_transform = RigidScaleTransform.identity()
+        self.current_score = None
+        self.accepted_transform = None
+        self.accepted_score = None
+        self.proposal = None
+        self.dirty = False
+        self.invalid_reason = reason
+
+    def is_compatible(
+        self,
+        moving: np.ndarray,
+        moving_spacing,
+        fixed: np.ndarray,
+        fixed_spacing,
+    ) -> bool:
+        if self.accepted_transform is None or self.inputs is None:
+            return False
+        return self.inputs == RegistrationInputSignature.capture(
+            moving, moving_spacing, fixed, fixed_spacing
+        )
 
 
 def invert_transform(transform: RigidScaleTransform) -> RigidScaleTransform:
