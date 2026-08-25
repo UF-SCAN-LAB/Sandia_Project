@@ -12,11 +12,11 @@ netlist-specific information.
 - [Architecture Overview](./xrayrecon/ARCHITECTURE.md)
 
 ## Installation
-Clone the repository and install the package in editable mode:
+Clone the repository and install the package and test dependencies in editable mode:
 ```bash
 git clone <repo-url>
 cd Sandia_Project
-pip install -e ./xrayrecon
+pip install -e ".[test]"
 ```
 
 Dependencies: PyQt5, PyQtGraph, qtextras, S3A, NumPy, SciPy, scikit-image,
@@ -41,9 +41,13 @@ exercised against a known-correct answer).
 
 ## Running Tests
 ```bash
-cd xrayrecon
-pytest xrayrecon/tests -v
+python -m pytest
 ```
+
+The canonical test configuration lives in `pyproject.toml`. Core algorithm
+tests do not require a display; Qt tests set the offscreen platform in their
+shared fixture. Use `python -m pytest -m "not slow"` for the normal development
+regression loop.
 
 ## Key Features
 - **Dual-pane 3D viewer** (`gui/app.py`): real CT data on the left
