@@ -7,6 +7,7 @@ measured-data ingestion, calibration, tests, and the application UI.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -173,6 +174,43 @@ class AMAcquisitionConfig:
     @classmethod
     def from_json(cls, payload: str) -> "AMAcquisitionConfig":
         return cls.from_dict(json.loads(payload))
+
+    def calibration_physics_dict(self) -> dict[str, Any]:
+        """Return only physical settings that a calibration is valid for.
+
+        Sampling density, photon noise, provenance, spectrum labels, and the
+        calibration identifier do not change the underlying response model and
+        are deliberately excluded. The angular span remains part of the
+        contract because incomplete coverage changes reconstruction scaling.
+        """
+        return {
+            "fingerprint_schema": "am-physics-v1",
+            "low_spectrum": {
+                "energies_kev": list(self.low_spectrum.energies_kev),
+                "weights": list(self.low_spectrum.weights),
+            },
+            "high_spectrum": {
+                "energies_kev": list(self.high_spectrum.energies_kev),
+                "weights": list(self.high_spectrum.weights),
+            },
+            "pixel_size_cm": float(self.pixel_size_cm),
+            "angle_start_deg": float(self.angle_start_deg),
+            "angle_stop_deg": float(self.angle_stop_deg),
+            "electron_density_unit": self.electron_density_unit,
+            "lut_a1_max": float(self.lut_a1_max),
+            "lut_a2_max": float(self.lut_a2_max),
+        }
+
+    @property
+    def calibration_fingerprint(self) -> str:
+        """Stable digest used to bind calibration to acquisition physics."""
+        canonical = json.dumps(
+            self.calibration_physics_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return f"am-physics-v1:{hashlib.sha256(canonical).hexdigest()}"
 
 
 @dataclass(frozen=True)

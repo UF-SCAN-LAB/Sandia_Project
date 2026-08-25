@@ -43,6 +43,50 @@ def test_default_acquisition_configuration_round_trips_as_json():
     assert payload["electron_density_unit"] == "relative_to_water"
     assert sum(restored.low_spectrum.weights) == pytest.approx(1.0)
     assert sum(restored.high_spectrum.weights) == pytest.approx(1.0)
+    assert restored.calibration_fingerprint == config.calibration_fingerprint
+
+
+@pytest.mark.unit
+def test_calibration_fingerprint_tracks_physics_not_sampling_or_provenance():
+    reference = AMAcquisitionConfig.industrial_default(
+        num_angles=96,
+        photon_count=2_000_000,
+        random_seed=71,
+        calibration_id="reference-v1",
+    )
+    different_sampling = AMAcquisitionConfig.from_dict(
+        {
+            **reference.to_dict(),
+            "num_angles": 64,
+            "photon_count": None,
+            "random_seed": None,
+            "source_kind": "measured",
+            "calibration_id": "scanner-run-v2",
+            "low_spectrum": {
+                **reference.low_spectrum.to_dict(),
+                "label": "operator label does not affect physics",
+            },
+        }
+    )
+    different_pixel_size = AMAcquisitionConfig.from_dict(
+        {**reference.to_dict(), "pixel_size_cm": 0.02}
+    )
+    different_spectrum = AMAcquisitionConfig.from_dict(
+        {
+            **reference.to_dict(),
+            "low_spectrum": AMSpectrum.triangular(
+                70.0, 160.0, label="different filtration"
+            ).to_dict(),
+        }
+    )
+
+    assert reference.calibration_fingerprint.startswith("am-physics-v1:")
+    assert (
+        different_sampling.calibration_fingerprint
+        == reference.calibration_fingerprint
+    )
+    assert different_pixel_size.calibration_fingerprint != reference.calibration_fingerprint
+    assert different_spectrum.calibration_fingerprint != reference.calibration_fingerprint
 
 
 @pytest.mark.unit
