@@ -69,6 +69,26 @@ The Alvarez-Macovski showcase bridge adds these deterministic requirements:
 - a `slow` full-volume test exercises the complete `96 x 128 x 24` path in at
   most 10 seconds on the reference development machine.
 
+The configurable acquisition/calibration layer additionally requires:
+
+- acquisition configurations round-trip through schema-versioned JSON;
+- spectra are finite, positive, ordered, and normalized;
+- simulated noise always has a seed, while measured provenance never carries
+  a simulation seed;
+- paired low/high projections have matching detector/angle geometry and strict
+  nonnegative finite negative-log values;
+- the legacy simulation call and equivalent explicit configuration produce
+  identical arrays;
+- projection generation and reconstruction can be invoked separately;
+- measured `.npy` import retains measured provenance and never claims synthetic
+  ground truth;
+- calibration is fitted on FR4, alumina, copper, tin, and tungsten while
+  aluminum and gold remain held out;
+- held-out relative electron-density median error is <= 10%, aluminum
+  Z-effective error is <= 15%, and gold Z-effective error is <= 20%;
+- nominal 90% held-out coverage remains between 80% and 97%; and
+- calibrated confidence/error rank correlation is >= 0.60.
+
 ## Reliability rules
 
 - Use fixed seeds for all random data.

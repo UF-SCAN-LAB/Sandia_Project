@@ -44,8 +44,9 @@ ALUMINUM, ALUMINA, and TUNGSTEN labels from the canonical material table.
 4. Use **AM Color: Z_eff**, **rho_e**, and **Material** to compare the three
    views in the left pane. The right pane retains the canonical Gerber labels.
 5. The application switches to the embedded quantitative workspace. Choose
-   material-regularized interpretation or raw inversion, move through slices,
-   and compare ground truth, recovery, confidence, and projection residual.
+   calibrated quantitative, material-regularized, or raw inversion, move
+   through slices, and compare ground truth, recovery, confidence, projection
+   residual, or either nominal 90% uncertainty half-width.
 6. Select **Back to volume workspace** to return without losing the result.
 
 The numerical result preserves raw `zeff_recovered` and `rhoe_recovered`
@@ -56,6 +57,14 @@ liquid water; matching arrays in `10^23 electrons/cm3` are also returned.
 Confidence is a deterministic quality indicator based on AM projection
 consistency, basis signal, edge sensitivity, and disagreement with the
 material interpretation. It is not a probability or uncertainty interval.
+
+The acquisition line identifies the two industrial spectra, projection count,
+pixel size, noise model, and whether the projections are simulated or measured.
+The showcase calibration is fitted on a separate seeded synthetic reference
+phantom using FR4, alumina, copper, tin, and tungsten; aluminum and gold are
+held out by the regression contract. The green status line explicitly says
+that measured scanner data was not supplied. Its nominal intervals therefore
+demonstrate the calibration workflow but are not a real-scanner validation.
 
 The ground-truth transform that aligns the right model onto the left scan is
 `tx=0.55 mm`, `ty=-0.45 mm`, `tz=0.12 mm`, `rotation=4 degrees`, and

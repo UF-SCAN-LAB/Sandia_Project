@@ -108,6 +108,19 @@ The central hub of the application. It:
   bounded confidence indicator. `gui.am_plot_window.AMAnalysisPanel` presents
   these results in the main workspace. Confidence is a quality indicator, not
   a probability, and never hides the raw inversion.
+- `am_acquisition.AMAcquisitionConfig` owns spectra, angular sampling, pixel
+  size, noise assumptions, LUT bounds, calibration ID, and simulated/measured
+  provenance. `PairedProjectionData` is the validated boundary for low/high
+  negative-log projections. Metadata is attached to `AMResult` attributes so
+  the result mapping remains array-only for backward compatibility.
+- `am_calibration.AMCalibrationModel` fits material response on named training
+  inserts and is evaluated on held-out materials. Z-effective calibration uses
+  the explicitly material-regularized channel because low-Z raw photoelectric
+  response can collapse beside high-Z inserts; relative electron density uses
+  the raw, more stable Compton channel. Raw arrays remain unchanged.
+- Uncertainty combines leave-one-material-out response error with voxel-level
+  projection residual and density disagreement. The displayed interval is an
+  empirically evaluated nominal interval, not a universal scanner guarantee.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

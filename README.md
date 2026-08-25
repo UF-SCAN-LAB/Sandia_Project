@@ -51,6 +51,9 @@ embedded quantitative workspace shows ground truth, raw or
 material-regularized recovery, projection residual, and reconstruction
 confidence. Electron density is labeled relative to water and is also retained
 in `10^23 electrons/cm3`; raw recovered arrays remain available for audit.
+The showcase now applies a separately fitted synthetic reference calibration,
+shows nominal 90% uncertainty maps, and labels that provenance explicitly. It
+does not claim measured-scanner validation.
 
 ## Running Tests
 ```bash
@@ -85,6 +88,9 @@ regression loop.
   a deterministic noiseless or seeded Poisson dual-energy scan, with explicit
   relative/absolute electron-density units, projection residual, confidence,
   volume colorization, and material classification against the materials database.
+- **Acquisition and calibration** (`am_acquisition.py`, `am_calibration.py`):
+  validated JSON spectra/geometry/provenance, strict paired `.npy` projection
+  import, held-out material calibration, and empirically checked uncertainty.
 
 ## Package Structure
 ```
@@ -104,6 +110,8 @@ xrayrecon/
 ├── synthetic_registration.py  # Deterministic registration demos/regression cases
 ├── ct_simulation.py           # Radon + FBP simulation of a real CT scan
 ├── alvarez_macovski.py        # Dual-energy decomposition, colorization, classification
+├── am_acquisition.py          # Serializable spectra, geometry, projection provenance/import
+├── am_calibration.py          # Material calibration and empirical uncertainty intervals
 ├── gerber_utils.py            # Gerber file parsing helpers
 ├── pygerber_integration.py    # Gerber file rasterization via pygerber
 ├── cubecorrections/
