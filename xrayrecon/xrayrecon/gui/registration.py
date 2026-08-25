@@ -70,6 +70,14 @@ class RegistrationPanel(QtWidgets.QWidget):
 
         self.overlayViewer = PCBViewer3D()
 
+        self.topViewBtn = QtWidgets.QPushButton("Top View")
+        self.isoViewBtn = QtWidgets.QPushButton("Isometric View")
+        self.overlayGuide = QtWidgets.QLabel(
+            "Overlay guide: Gerber = red, CT = green, aligned structures = yellow. "
+            "Use Top View to compare board landmarks and Isometric View to inspect depth."
+        )
+        self.overlayGuide.setWordWrap(True)
+
         self.qualityLabel = QtWidgets.QLabel(
             "Load CT and Gerber data, then activate registration."
         )
@@ -105,9 +113,17 @@ class RegistrationPanel(QtWidgets.QWidget):
         action_row.addWidget(self.acceptBtn)
         action_row.addStretch()
 
+        view_row = QtWidgets.QHBoxLayout()
+        view_row.addWidget(QtWidgets.QLabel("Camera:"))
+        view_row.addWidget(self.topViewBtn)
+        view_row.addWidget(self.isoViewBtn)
+        view_row.addStretch()
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addLayout(header)
+        layout.addWidget(self.overlayGuide)
+        layout.addLayout(view_row)
         layout.addWidget(self.overlayViewer, stretch=1)
         layout.addLayout(controls)
         layout.addWidget(self.qualityLabel)
@@ -120,6 +136,8 @@ class RegistrationPanel(QtWidgets.QWidget):
         self.suggestBtn.clicked.connect(self._suggestInitialAlignment)
         self.resetBtn.clicked.connect(self._resetSliders)
         self.acceptBtn.clicked.connect(self._onAccept)
+        self.topViewBtn.clicked.connect(self.overlayViewer.setCameraTop)
+        self.isoViewBtn.clicked.connect(self.overlayViewer.resetCamera)
 
         self._setControlsEnabled(False)
 
@@ -133,6 +151,8 @@ class RegistrationPanel(QtWidgets.QWidget):
             self.suggestBtn,
             self.resetBtn,
             self.acceptBtn,
+            self.topViewBtn,
+            self.isoViewBtn,
         ):
             widget.setEnabled(enabled)
 
@@ -178,7 +198,7 @@ class RegistrationPanel(QtWidgets.QWidget):
         self._setTransform(self.session.current_transform)
         self._setControlsEnabled(True)
         self._updatePreview()
-        self.overlayViewer.resetCamera()
+        self.overlayViewer.setCameraTop()
         return reset
 
     def currentTransform(self) -> RigidScaleTransform:

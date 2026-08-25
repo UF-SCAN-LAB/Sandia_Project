@@ -94,7 +94,10 @@ The central hub of the application. It:
   shapes, and physical spacing before label transfer. New same-shape datasets
   are therefore detected as stale.
 - `xrayrecon.synthetic_registration` provides production-owned deterministic
-  demo and regression cases; application code does not import from `tests`.
+  demo and regression cases, including the interpretable PCB showcase's
+  canonical multi-material labels, recognizable geometry, CT degradation,
+  layer metadata, and known transform. Application code does not import from
+  `tests`.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

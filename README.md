@@ -35,9 +35,13 @@ python -m xrayrecon.main --datafile /path/to/image_dir/
 ```
 
 The toolbar's "Tools" panel also has demo actions that need no data of your
-own: **Load Phantom Demo**, and **Debug: Load Synthetic Registration Demo**
-(loads a known-misaligned Gerber/CT pair so the registration tool can be
-exercised against a known-correct answer).
+own: **Load Phantom Demo** and **Load PCB Registration Showcase**. The PCB
+showcase loads a recognizable board with chips, pins, routed traces, vias,
+mounting holes, connector shell, gold fingers, fiducials, and passives. Its
+blurred/noisy CT-like scan and clean material-colored Gerber model have a
+known misalignment, so the complete embedded registration and label-transfer
+workflow can be exercised against a known-correct answer. See the
+[PCB Showcase Walkthrough](./xrayrecon/SHOWCASE_DEMO.md).
 
 ## Running Tests
 ```bash
@@ -64,7 +68,8 @@ regression loop.
   materials are resampled onto the real CT grid to auto-label it.
 - **Simulated X-ray / CT bridge** (`ct_simulation.py`): a true Radon +
   filtered-back-projection simulation of a Gerber stackup, for validating
-  registration/label-transfer logic on a perfectly pre-registered pair
+  registration/label-transfer logic on deterministic abstract and
+  interpretable PCB pairs
   before tackling real, misaligned CT data.
 - **Alvarez-Macovski dual-energy decomposition** (`alvarez_macovski.py`,
   `gui/am_plot_window.py`): recovers Z_eff / electron-density per voxel from

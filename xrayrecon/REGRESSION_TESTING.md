@@ -40,6 +40,13 @@ identifiability, and minimum expected score gain. The canonical matrix covers:
 Known-transform tests use asymmetric, feature-rich geometry. Constant and
 symmetric cases must not be used to claim transform recovery.
 
+The application showcase adds a richer contract on top of that numerical
+matrix. It must retain a keyed board outline, four mounting holes, QFP and
+secondary IC packages, connector shell, eight gold edge fingers, traces,
+through-vias, fiducials, and passives. Tests also require canonical material
+IDs, meaningful voxel populations, deterministic CT degradation, a known
+alignment score above 0.95, and a bounded suggestion score above 0.80.
+
 ## Reliability rules
 
 - Use fixed seeds for all random data.

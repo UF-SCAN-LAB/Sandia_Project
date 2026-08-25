@@ -2,6 +2,7 @@ import numpy as np
 from pyqtgraph.Qt import QtWidgets
 
 from xrayrecon.gui.registration import RegistrationPanel
+from xrayrecon.gui.view3d import PCBViewer3D
 from xrayrecon.tests.fixtures import make_synthetic_pair
 
 
@@ -81,3 +82,10 @@ def test_suggested_alignment_improves_score_without_accepting(qapp):
     assert suggested_score > initial_score
     assert "suggestion" in win.qualityLabel.text()
     assert accepted == []
+
+
+def test_3d_viewer_starts_with_valid_rgba_texture(qapp):
+    viewer = PCBViewer3D()
+
+    assert viewer.volume.data.shape == (1, 1, 1, 4)
+    assert viewer.volume.data.dtype == np.uint8
