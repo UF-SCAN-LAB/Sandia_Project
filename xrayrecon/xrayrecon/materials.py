@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
+import numpy as np
+
 @dataclass
 class MaterialProperties:
     name: str
@@ -63,3 +65,32 @@ MATERIAL_COLORS: Dict[str, Tuple[int, int, int, int]] = {
 # (colorizing them), so a label volume's integer indices always mean the
 # same thing regardless of which module produced or consumes them.
 MATERIAL_NAMES: List[str] = sorted(MATERIALS_DB.keys())
+
+
+def material_labels_to_zeff_rhoe(label_volume: np.ndarray) -> np.ndarray:
+    """Map canonical material IDs to ``[..., (Z_eff, electron_density)]``.
+
+    ``label_volume`` may use any spatial axis order. Its integer values must
+    index ``MATERIAL_NAMES``, matching the voxelizer, showcase, AM classifier,
+    and material colorizer. The returned float32 array appends a two-channel
+    property axis and is directly consumable by ``simulate_am_volume`` once
+    the spatial axes are in ``(Z, H, W)`` order.
+    """
+    labels = np.asarray(label_volume)
+    if not np.issubdtype(labels.dtype, np.integer):
+        raise TypeError("material labels must use an integer dtype")
+    if labels.size:
+        minimum = int(labels.min())
+        maximum = int(labels.max())
+        if minimum < 0 or maximum >= len(MATERIAL_NAMES):
+            raise ValueError(
+                f"material labels must be in [0, {len(MATERIAL_NAMES) - 1}]"
+            )
+
+    properties = np.empty(labels.shape + (2,), dtype=np.float32)
+    for material_id, name in enumerate(MATERIAL_NAMES):
+        material = MATERIALS_DB[name]
+        mask = labels == material_id
+        properties[..., 0][mask] = material.z_eff
+        properties[..., 1][mask] = material.electron_density
+    return properties

@@ -2,7 +2,8 @@
 implementation in notebooks/Spectral-Xray/{alvarez_macovski_demo.ipynb,
 make_am_process_diagram.py} for use on Gerber-Voxelizer-derived volumes.
 
-Model: mu(x, y, E) = a1(x,y)*f1(E) + a2(x,y)*f2(E), where f1(E) = E^-3
+Model: mu(x, y, E) = a1(x,y)*f1(E) + a2(x,y)*f2(E), where
+f1(E) = (50 keV / E)^3
 (photoelectric) and f2(E) = Klein-Nishina Compton cross-section (energy
 only). a2 is proportional to electron density; a1/a2 gives an effective
 atomic number via a calibrated power law (PE_EXPONENT).
@@ -21,7 +22,8 @@ genuine dual-energy-CT limitation, not a bug.
 from __future__ import annotations
 
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.ndimage import median_filter
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.optimize import fsolve
 
 from .materials import MATERIALS_DB, MATERIAL_COLORS, MATERIAL_NAMES
@@ -29,11 +31,12 @@ from skimage.transform import iradon, radon
 
 PE_EXPONENT = 3.8
 K_REF_Z = 29.0  # copper as the reference Z -- keeps a1 ~ a2 order of magnitude there
+PE_REFERENCE_ENERGY_KEV = 50.0
 
 
 def f1(E):
-    """Photoelectric basis function."""
-    return E ** (-3)
+    """Photoelectric basis, normalized to 1 at the shared 50 keV reference."""
+    return (PE_REFERENCE_ENERGY_KEV / np.asarray(E, dtype=float)) ** 3
 
 
 def klein_nishina(E):
@@ -129,7 +132,24 @@ def _build_lut(a1_max: float, a2_max: float):
     return pts, AA1.ravel(), AA2.ravel()
 
 
-def _decompose_sinogram(sino_Llo: np.ndarray, sino_Lhi: np.ndarray, a1_max: float, a2_max: float):
+def _build_lut_inverter(a1_max: float, a2_max: float):
+    """Build reusable joint interpolators for both AM basis coefficients."""
+    points, a1_values, a2_values = _build_lut(a1_max, a2_max)
+    values = np.column_stack([a1_values, a2_values])
+    return (
+        LinearNDInterpolator(points, values, fill_value=np.nan),
+        NearestNDInterpolator(points, values),
+    )
+
+
+def _decompose_sinogram(
+    sino_Llo: np.ndarray,
+    sino_Lhi: np.ndarray,
+    a1_max: float,
+    a2_max: float,
+    *,
+    lut=None,
+):
     """LUT-based (griddata) decomposition -- same approach the notebook's own
     full end-to-end pipeline uses for whole-sinogram decomposition (per-ray
     fsolve is reserved there for a handful of illustrative single rays, not
@@ -138,19 +158,46 @@ def _decompose_sinogram(sino_Llo: np.ndarray, sino_Lhi: np.ndarray, a1_max: floa
     Returns (A1_rec, A2_rec) sinograms same shape as the inputs.
     """
     shape = sino_Llo.shape
-    pts, a1_flat, a2_flat = _build_lut(a1_max, a2_max)
+    linear, nearest = lut or _build_lut_inverter(a1_max, a2_max)
     query = np.column_stack([sino_Llo.ravel(), sino_Lhi.ravel()])
+    recovered = linear(query)
+    invalid = ~np.isfinite(recovered).all(axis=1)
+    if invalid.any():
+        recovered[invalid] = nearest(query[invalid])
 
-    def invert(values):
-        lin = griddata(pts, values, query, method="linear")
-        nan = ~np.isfinite(lin)
-        if nan.any():
-            lin[nan] = griddata(pts, values, query[nan], method="nearest")
-        return lin
-
-    A1_rec = np.clip(invert(a1_flat), 0, None)
-    A2_rec = np.clip(invert(a2_flat), 0, None)
+    A1_rec = np.clip(recovered[:, 0], 0, None)
+    A2_rec = np.clip(recovered[:, 1], 0, None)
     return A1_rec.reshape(shape), A2_rec.reshape(shape)
+
+
+def _match_reconstruction_shape(
+    reconstruction: np.ndarray, target_shape: tuple[int, int]
+) -> np.ndarray:
+    """Center-crop/pad square ``iradon`` output to the source slice shape.
+
+    With ``circle=False``, scikit-image pads rectangular inputs to a square
+    detector footprint. ``iradon`` consequently returns a square image even
+    when the original slice was rectangular. The physical object remains
+    centered, so a symmetric crop (or defensive pad for unusual versions) is
+    the inverse geometry needed before stacking reconstructed slices.
+    """
+    target_h, target_w = (int(target_shape[0]), int(target_shape[1]))
+    source_h, source_w = reconstruction.shape
+    output = np.zeros((target_h, target_w), dtype=reconstruction.dtype)
+
+    copy_h = min(source_h, target_h)
+    copy_w = min(source_w, target_w)
+    source_y = max(0, (source_h - copy_h) // 2)
+    source_x = max(0, (source_w - copy_w) // 2)
+    target_y = max(0, (target_h - copy_h) // 2)
+    target_x = max(0, (target_w - copy_w) // 2)
+    output[target_y : target_y + copy_h, target_x : target_x + copy_w] = (
+        reconstruction[
+            source_y : source_y + copy_h,
+            source_x : source_x + copy_w,
+        ]
+    )
+    return output
 
 
 def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
@@ -172,8 +219,12 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
     ~700 in testing, vs. a real max of ~79 for gold) that would otherwise
     dominate the plot's color scale.
 
-    Returns a dict with ground-truth and recovered (Z, H, W) volumes for
-    Z_eff and rho_e, ready for side-by-side comparison.
+    Returns ground-truth and raw recovered ``(Z, H, W)`` volumes plus
+    explicitly named material-regularized properties/labels. Raw outputs
+    preserve the direct decomposition for audit. Regularized outputs median-
+    filter rho_e and map the joint recovered response to the canonical
+    material table, providing stable, interpretable demo visualization while
+    retaining the approximation as separate data.
     """
     z_depth, h, w, _ = vol.shape
     if num_angles is None:
@@ -194,6 +245,7 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
 
     zeff_rec = np.zeros((z_depth, h, w), dtype=np.float32)
     rhoe_rec = np.zeros((z_depth, h, w), dtype=np.float32)
+    decomposition_lut = _build_lut_inverter(a1_max_bound, a2_max_bound)
 
     for z in range(z_depth):
         a1_slice = a1_vol[z].astype(np.float32)
@@ -206,26 +258,47 @@ def simulate_am_volume(vol: np.ndarray, num_angles: int | None = None,
         sino_Lhi = forward_arr(sino_A1, sino_A2, E_HI, PHI_HI).reshape(sino_A1.shape)
 
         sino_A1_rec, sino_A2_rec = _decompose_sinogram(
-            sino_Llo, sino_Lhi, a1_max_bound, a2_max_bound
+            sino_Llo,
+            sino_Lhi,
+            a1_max_bound,
+            a2_max_bound,
+            lut=decomposition_lut,
         )
 
         recon_a1 = np.clip(
-            iradon(sino_A1_rec, theta=theta, filter_name="ramp", circle=False) / pixel_size_cm,
-            0, None,
+            _match_reconstruction_shape(
+                iradon(sino_A1_rec, theta=theta, filter_name="ramp", circle=False),
+                (h, w),
+            )
+            / pixel_size_cm,
+            0,
+            None,
         )
         recon_a2 = np.clip(
-            iradon(sino_A2_rec, theta=theta, filter_name="ramp", circle=False) / pixel_size_cm,
-            0, None,
+            _match_reconstruction_shape(
+                iradon(sino_A2_rec, theta=theta, filter_name="ramp", circle=False),
+                (h, w),
+            )
+            / pixel_size_cm,
+            0,
+            None,
         )
 
         zeff_rec[z] = np.clip(to_zeff(recon_a1, recon_a2), 0, zeff_clip)
         rhoe_rec[z] = np.clip(to_rho_e(recon_a2), 0, rhoe_clip)
+
+    recovered_labels, zeff_regularized, rhoe_regularized = (
+        regularize_recovered_material_properties(zeff_rec, rhoe_rec)
+    )
 
     return dict(
         zeff_ground_truth=zeff_gt.astype(np.float32),
         rhoe_ground_truth=rhoe_gt.astype(np.float32),
         zeff_recovered=zeff_rec,
         rhoe_recovered=rhoe_rec,
+        zeff_regularized=zeff_regularized,
+        rhoe_regularized=rhoe_regularized,
+        material_labels_recovered=recovered_labels,
     )
 
 
@@ -273,7 +346,13 @@ _ZEFF_SCALE = max(float(_REFERENCE_ZEFF.max()), 1e-9)
 _RHOE_SCALE = max(float(_REFERENCE_RHOE.max()), 1e-9)
 
 
-def classify_material_volume(zeff_vol: np.ndarray, rhoe_vol: np.ndarray) -> np.ndarray:
+def classify_material_volume(
+    zeff_vol: np.ndarray,
+    rhoe_vol: np.ndarray,
+    *,
+    zeff_weight: float = 1.0,
+    rhoe_weight: float = 1.0,
+) -> np.ndarray:
     """Classify each voxel's (Z_eff, rho_e) to the nearest reference material
     in MATERIALS_DB (normalized Euclidean distance in (Z_eff, rho_e) space).
 
@@ -285,8 +364,56 @@ def classify_material_volume(zeff_vol: np.ndarray, rhoe_vol: np.ndarray) -> np.n
     ref_zeff = (_REFERENCE_ZEFF / _ZEFF_SCALE)[None, :]
     ref_rhoe = (_REFERENCE_RHOE / _RHOE_SCALE)[None, :]
 
-    dist2 = (zeff_flat - ref_zeff) ** 2 + (rhoe_flat - ref_rhoe) ** 2
+    if zeff_weight < 0 or rhoe_weight < 0 or (zeff_weight + rhoe_weight) <= 0:
+        raise ValueError("classification weights must be nonnegative and not both zero")
+    dist2 = (
+        float(zeff_weight) * (zeff_flat - ref_zeff) ** 2
+        + float(rhoe_weight) * (rhoe_flat - ref_rhoe) ** 2
+    )
     return np.argmin(dist2, axis=1).reshape(zeff_vol.shape)
+
+
+def regularize_recovered_material_properties(
+    zeff_recovered: np.ndarray,
+    rhoe_recovered: np.ndarray,
+    *,
+    median_size: int = 3,
+    zeff_weight: float = 0.01,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Create stable approximate-material properties without hiding raw AM data.
+
+    FBP ringing from very high-Z gold/tungsten can dominate the much smaller
+    low-Z photoelectric coefficient in adjacent FR4 voxels. A 3x3 in-plane
+    median on electron density suppresses those isolated streaks. Density is
+    the more stable recovered channel, so nearest-reference classification
+    uses it as the primary signal and raw Z_eff only as a weak tie-breaker.
+
+    Returns ``(labels, zeff_regularized, rhoe_regularized)`` in the same
+    spatial shape as the inputs. Callers must continue to expose the raw
+    recovered arrays when quantitative decomposition output is required.
+    """
+    zeff = np.asarray(zeff_recovered, dtype=np.float32)
+    rhoe = np.asarray(rhoe_recovered, dtype=np.float32)
+    if zeff.shape != rhoe.shape:
+        raise ValueError("Z-effective and electron-density volumes must match")
+    if median_size < 1 or median_size % 2 == 0:
+        raise ValueError("median_size must be a positive odd integer")
+
+    if zeff.ndim >= 3:
+        filter_size = (1,) * (zeff.ndim - 2) + (median_size, median_size)
+    else:
+        filter_size = (median_size,) * zeff.ndim
+    rhoe_filtered = median_filter(rhoe, size=filter_size, mode="nearest")
+    labels = classify_material_volume(
+        zeff,
+        rhoe_filtered,
+        zeff_weight=zeff_weight,
+        rhoe_weight=1.0,
+    )
+
+    reference_zeff = _REFERENCE_ZEFF.astype(np.float32)
+    reference_rhoe = _REFERENCE_RHOE.astype(np.float32)
+    return labels, reference_zeff[labels], reference_rhoe[labels]
 
 
 def colorize_by_material(zeff_vol: np.ndarray, rhoe_vol: np.ndarray) -> np.ndarray:
