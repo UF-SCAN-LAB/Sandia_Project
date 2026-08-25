@@ -26,6 +26,7 @@ from scipy.ndimage import gaussian_filter, median_filter, sobel
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.optimize import fsolve
 
+from .am_acquisition import AMAcquisitionConfig, AMSpectrum, PairedProjectionData
 from .materials import (
     MATERIALS_DB,
     MATERIAL_COLORS,
@@ -37,6 +38,28 @@ from skimage.transform import iradon, radon
 PE_EXPONENT = 3.8
 K_REF_Z = 29.0  # copper as the reference Z -- keeps a1 ~ a2 order of magnitude there
 PE_REFERENCE_ENERGY_KEV = 50.0
+
+
+class AMResult(dict):
+    """Array-only result mapping with acquisition provenance as attributes.
+
+    Keeping metadata out of mapping values preserves compatibility with callers
+    that iterate over every returned volume while still making provenance and
+    calibration state impossible to lose in the supported API.
+    """
+
+    def __init__(
+        self,
+        *args,
+        acquisition_config: AMAcquisitionConfig,
+        has_ground_truth: bool,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.acquisition_config = acquisition_config
+        self.source_kind = acquisition_config.source_kind
+        self.calibration_id = acquisition_config.calibration_id
+        self.has_ground_truth = bool(has_ground_truth)
 
 
 def f1(E):
@@ -85,6 +108,19 @@ def forward_arr(A1_arr, A2_arr, E, phi):
     return -np.log(np.clip(transmitted, 1e-12, None))
 
 
+def forward_spectrum(
+    A1_arr: np.ndarray, A2_arr: np.ndarray, spectrum: AMSpectrum
+) -> np.ndarray:
+    """Vectorized Beer-Lambert projection for a discrete normalized spectrum."""
+    a1 = np.asarray(A1_arr, dtype=float).ravel()
+    a2 = np.asarray(A2_arr, dtype=float).ravel()
+    energies = np.asarray(spectrum.energies_kev, dtype=float)
+    weights = np.asarray(spectrum.weights, dtype=float)
+    exponent = -np.outer(a1, f1(energies)) - np.outer(a2, f2(energies))
+    transmitted = np.sum(weights * np.exp(exponent), axis=1)
+    return -np.log(np.clip(transmitted, 1e-12, None))
+
+
 def to_a1a2(z_eff: np.ndarray, density: np.ndarray):
     """Ground-truth (z_eff, density) -> AM basis coefficients (a1, a2)."""
     a2 = density
@@ -122,7 +158,9 @@ def _decompose_ray(l_lo, l_hi, a1_init, a2_init, a1_max):
     return float(np.clip(sol[0], 0.0, a1_max)), float(max(sol[1], 0.0))
 
 
-def _build_lut(a1_max: float, a2_max: float):
+def _build_lut(
+    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None
+):
     """Log-spaced A1 grid: real photoelectric coefficients span ~5 orders of
     magnitude (air/FR4 vs. copper/solder/gold), which a linear grid cannot
     resolve."""
@@ -131,15 +169,21 @@ def _build_lut(a1_max: float, a2_max: float):
     A1g = np.concatenate([[0.0], np.logspace(np.log10(a1_max * 1e-4), np.log10(a1_max), 160)])
     A2g = np.linspace(0.0, a2_max, 100)
     AA1, AA2 = np.meshgrid(A1g, A2g, indexing="ij")
-    Llo_grid = forward_arr(AA1, AA2, E_LO, PHI_LO)
-    Lhi_grid = forward_arr(AA1, AA2, E_HI, PHI_HI)
+    if config is None:
+        Llo_grid = forward_arr(AA1, AA2, E_LO, PHI_LO)
+        Lhi_grid = forward_arr(AA1, AA2, E_HI, PHI_HI)
+    else:
+        Llo_grid = forward_spectrum(AA1, AA2, config.low_spectrum)
+        Lhi_grid = forward_spectrum(AA1, AA2, config.high_spectrum)
     pts = np.column_stack([Llo_grid, Lhi_grid])
     return pts, AA1.ravel(), AA2.ravel()
 
 
-def _build_lut_inverter(a1_max: float, a2_max: float):
+def _build_lut_inverter(
+    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None
+):
     """Build reusable joint interpolators for both AM basis coefficients."""
-    points, a1_values, a2_values = _build_lut(a1_max, a2_max)
+    points, a1_values, a2_values = _build_lut(a1_max, a2_max, config)
     values = np.column_stack([a1_values, a2_values])
     return (
         LinearNDInterpolator(points, values, fill_value=np.nan),
@@ -154,6 +198,7 @@ def _decompose_sinogram(
     a2_max: float,
     *,
     lut=None,
+    config: AMAcquisitionConfig | None = None,
 ):
     """LUT-based (griddata) decomposition -- same approach the notebook's own
     full end-to-end pipeline uses for whole-sinogram decomposition (per-ray
@@ -163,7 +208,7 @@ def _decompose_sinogram(
     Returns (A1_rec, A2_rec) sinograms same shape as the inputs.
     """
     shape = sino_Llo.shape
-    linear, nearest = lut or _build_lut_inverter(a1_max, a2_max)
+    linear, nearest = lut or _build_lut_inverter(a1_max, a2_max, config)
     query = np.column_stack([sino_Llo.ravel(), sino_Lhi.ravel()])
     recovered = linear(query)
     invalid = ~np.isfinite(recovered).all(axis=1)
@@ -301,138 +346,131 @@ def _quality_maps(
     return residual, np.clip(confidence, 0.0, 1.0).astype(np.float32)
 
 
-def simulate_am_volume(
-    vol: np.ndarray,
-    num_angles: int | None = None,
-    pixel_size_cm: float = 0.01,
-    *,
-    photon_count: int | None = None,
-    random_seed: int | None = None,
-) -> dict:
-    """Simulate an Alvarez-Macovski dual-energy CT scan of a Voxelizer volume.
-
-    vol: (Z, H, W, 2) = [z_eff, relative electron density to water], as returned by
-    Voxelizer.voxelize_stackup(). For each Z slice: convert ground truth to
-    (a1, a2), Radon-project at two energies via the polychromatic
-    Beer-Lambert forward model, decompose back to (a1_hat, a2_hat) via a
-    LUT (griddata), FBP-reconstruct (circle=False -- required to avoid
-    corner-clipping of features that reach the layout edges, same
-    consideration as ct_simulation.py), then convert to (Z_eff, rho_e).
-
-    Recovered Z_eff/rho_e are clipped to a sane physical range: FBP ringing
-    can leave a2 (density) reconstructed near-zero at isolated voxels while
-    a1 doesn't hit zero at the same spot, and since Z_eff = K*(a1/a2)^(1/n)
-    is a ratio, that produces wild, unphysical outliers (observed up to
-    ~700 in testing, vs. a real max of ~79 for gold) that would otherwise
-    dominate the plot's color scale.
-
-    ``photon_count`` enables a seeded Poisson acquisition model. A seed is
-    required for deterministic regression and may not be supplied unless the
-    noise model is enabled.
-
-    Returns ground-truth and raw recovered ``(Z, H, W)`` volumes plus
-    explicitly named material-regularized properties/labels. Raw outputs
-    preserve the direct decomposition for audit. Regularized outputs median-
-    filter rho_e and map the joint recovered response to the canonical
-    material table, providing stable, interpretable demo visualization while
-    retaining the approximation as separate data.
-    """
+def simulate_am_projections(
+    vol: np.ndarray, config: AMAcquisitionConfig
+) -> PairedProjectionData:
+    """Forward-project a property volume into validated low/high AM data."""
     vol = np.asarray(vol)
     if vol.ndim != 4 or vol.shape[-1] != 2:
         raise ValueError("AM volume must have shape (Z, H, W, 2)")
-    if photon_count is not None:
-        if not isinstance(photon_count, (int, np.integer)) or photon_count <= 0:
-            raise ValueError("photon_count must be a positive integer")
-        if random_seed is None:
-            raise ValueError("random_seed is required when photon_count enables noise")
-    elif random_seed is not None:
-        raise ValueError("random_seed requires photon_count to enable noise")
-    if pixel_size_cm <= 0:
-        raise ValueError("pixel_size_cm must be positive")
-
-    rng = np.random.default_rng(random_seed) if photon_count is not None else None
+    if config.source_kind != "simulated":
+        raise ValueError("forward simulation requires source_kind='simulated'")
+    rng = (
+        np.random.default_rng(config.random_seed)
+        if config.photon_count is not None
+        else None
+    )
     z_depth, h, w, _ = vol.shape
-    if num_angles is None:
-        num_angles = max(h, w)
-    theta = np.linspace(0.0, 180.0, num_angles, endpoint=False)
+    a1_vol, a2_vol = to_a1a2(vol[..., 0], vol[..., 1])
+    a1_max_bound = max(
+        float(a1_vol.max()) * max(h, w) * config.pixel_size_cm * 1.5, 1e-6
+    )
+    a2_max_bound = max(
+        float(a2_vol.max()) * max(h, w) * config.pixel_size_cm * 1.5, 1e-6
+    )
+    theta = config.theta_deg
+    low_slices = []
+    high_slices = []
+    for z in range(z_depth):
+        sino_a1 = radon(a1_vol[z].astype(np.float32), theta=theta, circle=False)
+        sino_a2 = radon(a2_vol[z].astype(np.float32), theta=theta, circle=False)
+        sino_a1 *= config.pixel_size_cm
+        sino_a2 *= config.pixel_size_cm
+        low = forward_spectrum(sino_a1, sino_a2, config.low_spectrum).reshape(
+            sino_a1.shape
+        )
+        high = forward_spectrum(sino_a1, sino_a2, config.high_spectrum).reshape(
+            sino_a1.shape
+        )
+        if config.photon_count is not None:
+            low = _poisson_log_measurement(low, config.photon_count, rng)
+            high = _poisson_log_measurement(high, config.photon_count, rng)
+        low_slices.append(low.astype(np.float32))
+        high_slices.append(high.astype(np.float32))
+    return PairedProjectionData(
+        np.stack(low_slices),
+        np.stack(high_slices),
+        theta,
+        config,
+        a1_max_bound,
+        a2_max_bound,
+    )
 
-    z_eff_vol = vol[..., 0]
-    density_vol = vol[..., 1]
-    a1_vol, a2_vol = to_a1a2(z_eff_vol, density_vol)
 
-    a1_max_bound = a1_vol.max() * max(h, w) * pixel_size_cm * 1.5
-    a2_max_bound = a2_vol.max() * max(h, w) * pixel_size_cm * 1.5
-
-    zeff_gt = to_zeff(a1_vol, a2_vol)
-    rhoe_gt = to_rho_e(a2_vol)
-    zeff_clip = float(zeff_gt.max()) * 1.5 if zeff_gt.max() > 0 else K_REF_Z * 3
-    rhoe_clip = float(rhoe_gt.max()) * 1.5 if rhoe_gt.max() > 0 else 1.0
-
+def reconstruct_am_projections(
+    projections: PairedProjectionData,
+    *,
+    output_shape: tuple[int, int],
+    zeff_clip: float | None = None,
+    rhoe_clip: float | None = None,
+) -> AMResult:
+    """Reconstruct simulated or measured paired negative-log projections."""
+    h, w = (int(output_shape[0]), int(output_shape[1]))
+    if h <= 0 or w <= 0:
+        raise ValueError("output_shape values must be positive")
+    low_zhw = projections.low_log_zhw
+    high_zhw = projections.high_log_zhw
+    z_depth = low_zhw.shape[0]
+    config = projections.config
+    theta = projections.theta_deg
+    zeff_limit = (
+        float(zeff_clip)
+        if zeff_clip is not None
+        else float(_REFERENCE_ZEFF.max()) * 1.5
+    )
+    rhoe_limit = (
+        float(rhoe_clip)
+        if rhoe_clip is not None
+        else float(_REFERENCE_RHOE.max()) * 1.5
+    )
     zeff_rec = np.zeros((z_depth, h, w), dtype=np.float32)
     rhoe_rec = np.zeros((z_depth, h, w), dtype=np.float32)
     projection_residual = np.zeros((z_depth, h, w), dtype=np.float32)
     confidence = np.zeros((z_depth, h, w), dtype=np.float32)
-    decomposition_lut = _build_lut_inverter(a1_max_bound, a2_max_bound)
-
+    decomposition_lut = _build_lut_inverter(
+        projections.a1_max_bound, projections.a2_max_bound, config
+    )
     for z in range(z_depth):
-        a1_slice = a1_vol[z].astype(np.float32)
-        a2_slice = a2_vol[z].astype(np.float32)
-
-        sino_A1 = radon(a1_slice, theta=theta, circle=False) * pixel_size_cm
-        sino_A2 = radon(a2_slice, theta=theta, circle=False) * pixel_size_cm
-
-        sino_Llo = forward_arr(sino_A1, sino_A2, E_LO, PHI_LO).reshape(sino_A1.shape)
-        sino_Lhi = forward_arr(sino_A1, sino_A2, E_HI, PHI_HI).reshape(sino_A1.shape)
-        if photon_count is not None:
-            sino_Llo = _poisson_log_measurement(sino_Llo, photon_count, rng)
-            sino_Lhi = _poisson_log_measurement(sino_Lhi, photon_count, rng)
-
-        sino_A1_rec, sino_A2_rec = _decompose_sinogram(
-            sino_Llo,
-            sino_Lhi,
-            a1_max_bound,
-            a2_max_bound,
+        sino_a1_rec, sino_a2_rec = _decompose_sinogram(
+            low_zhw[z],
+            high_zhw[z],
+            projections.a1_max_bound,
+            projections.a2_max_bound,
             lut=decomposition_lut,
+            config=config,
         )
-
         recon_a1 = np.clip(
             _match_reconstruction_shape(
-                iradon(sino_A1_rec, theta=theta, filter_name="ramp", circle=False),
+                iradon(sino_a1_rec, theta=theta, filter_name="ramp", circle=False),
                 (h, w),
             )
-            / pixel_size_cm,
+            / config.pixel_size_cm,
             0,
             None,
         )
         recon_a2 = np.clip(
             _match_reconstruction_shape(
-                iradon(sino_A2_rec, theta=theta, filter_name="ramp", circle=False),
+                iradon(sino_a2_rec, theta=theta, filter_name="ramp", circle=False),
                 (h, w),
             )
-            / pixel_size_cm,
+            / config.pixel_size_cm,
             0,
             None,
         )
-
-        zeff_rec[z] = np.clip(to_zeff(recon_a1, recon_a2), 0, zeff_clip)
-        rhoe_rec[z] = np.clip(to_rho_e(recon_a2), 0, rhoe_clip)
+        zeff_rec[z] = np.clip(to_zeff(recon_a1, recon_a2), 0, zeff_limit)
+        rhoe_rec[z] = np.clip(to_rho_e(recon_a2), 0, rhoe_limit)
         projection_residual[z], confidence[z] = _quality_maps(
             recon_a1,
             recon_a2,
-            sino_A1_rec,
-            sino_A2_rec,
+            sino_a1_rec,
+            sino_a2_rec,
             theta,
-            pixel_size_cm,
+            config.pixel_size_cm,
             (h, w),
         )
-
     recovered_labels, zeff_regularized, rhoe_regularized = (
         regularize_recovered_material_properties(zeff_rec, rhoe_rec)
     )
-    # A large disagreement between the direct inversion and the independently
-    # density-led material interpretation is a useful, ground-truth-free sign
-    # that the raw a1/a2 ratio is unstable. Fold it into confidence only after
-    # preserving both raw and regularized arrays as separate outputs.
     property_disagreement = (
         np.abs(zeff_rec - zeff_regularized) / max(_ZEFF_SCALE, 1e-9)
         + np.abs(rhoe_rec - rhoe_regularized) / max(_RHOE_SCALE, 1e-9)
@@ -443,10 +481,7 @@ def simulate_am_volume(
     confidence = np.clip(confidence * disagreement_penalty, 0.0, 1.0).astype(
         np.float32
     )
-
-    return dict(
-        zeff_ground_truth=zeff_gt.astype(np.float32),
-        rhoe_ground_truth=rhoe_gt.astype(np.float32),
+    return AMResult(
         zeff_recovered=zeff_rec,
         rhoe_recovered=rhoe_rec,
         zeff_regularized=zeff_regularized,
@@ -454,16 +489,76 @@ def simulate_am_volume(
         material_labels_recovered=recovered_labels,
         projection_residual=projection_residual,
         confidence=confidence,
-        rhoe_e23_cm3_ground_truth=(
-            rhoe_gt * WATER_ELECTRON_DENSITY_E23_CM3
-        ).astype(np.float32),
         rhoe_e23_cm3_recovered=(
             rhoe_rec * WATER_ELECTRON_DENSITY_E23_CM3
         ).astype(np.float32),
         rhoe_e23_cm3_regularized=(
             rhoe_regularized * WATER_ELECTRON_DENSITY_E23_CM3
         ).astype(np.float32),
+        acquisition_config=config,
+        has_ground_truth=False,
     )
+
+
+def simulate_am_volume(
+    vol: np.ndarray,
+    num_angles: int | None = None,
+    pixel_size_cm: float = 0.01,
+    *,
+    photon_count: int | None = None,
+    random_seed: int | None = None,
+    config: AMAcquisitionConfig | None = None,
+) -> AMResult:
+    """Simulate and reconstruct a property volume through the AM pipeline.
+
+    The legacy scalar arguments remain supported. New code should pass a
+    validated ``AMAcquisitionConfig``. Supplying both forms is rejected so the
+    physical acquisition is never ambiguous.
+    """
+    volume = np.asarray(vol)
+    if volume.ndim != 4 or volume.shape[-1] != 2:
+        raise ValueError("AM volume must have shape (Z, H, W, 2)")
+    z_depth, h, w, _ = volume.shape
+    del z_depth
+    if config is not None:
+        if (
+            num_angles is not None
+            or pixel_size_cm != 0.01
+            or photon_count is not None
+            or random_seed is not None
+        ):
+            raise ValueError("config cannot be combined with legacy acquisition arguments")
+        acquisition = config
+    else:
+        acquisition = AMAcquisitionConfig.industrial_default(
+            num_angles=max(h, w) if num_angles is None else num_angles,
+            photon_count=photon_count,
+            random_seed=random_seed,
+        )
+        if pixel_size_cm != acquisition.pixel_size_cm:
+            acquisition = AMAcquisitionConfig.from_dict(
+                {**acquisition.to_dict(), "pixel_size_cm": pixel_size_cm}
+            )
+    if acquisition.source_kind != "simulated":
+        raise ValueError("simulate_am_volume requires source_kind='simulated'")
+    projections = simulate_am_projections(volume, acquisition)
+    zeff_gt = volume[..., 0].astype(np.float32)
+    rhoe_gt = volume[..., 1].astype(np.float32)
+    result = reconstruct_am_projections(
+        projections,
+        output_shape=(h, w),
+        zeff_clip=float(zeff_gt.max()) * 1.5 if zeff_gt.max() > 0 else K_REF_Z * 3,
+        rhoe_clip=float(rhoe_gt.max()) * 1.5 if rhoe_gt.max() > 0 else 1.0,
+    )
+    result.update(
+        zeff_ground_truth=zeff_gt,
+        rhoe_ground_truth=rhoe_gt,
+        rhoe_e23_cm3_ground_truth=(
+            rhoe_gt * WATER_ELECTRON_DENSITY_E23_CM3
+        ).astype(np.float32),
+    )
+    result.has_ground_truth = True
+    return result
 
 
 def colorize_volume(scalar_vol: np.ndarray, cmap_name: str, background_frac: float = 0.02) -> np.ndarray:
