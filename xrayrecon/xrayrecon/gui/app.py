@@ -27,7 +27,7 @@ from .layerview import LayerView
 from .am_plot_window import AMPlotWindow, MaterialLegendWidget
 from .stackup_editor import StackupEditorWindow
 from .spacing_dialog import SpacingDialog
-from .registration import RegistrationWindow
+from .registration import RegistrationPanel
 from .view3d import PCBViewer3D
 
 # Gerber Integration Imports
@@ -47,7 +47,7 @@ from ..alvarez_macovski import (
     colorize_by_material,
     colorize_material_labels,
 )
-from ..registration import RigidScaleTransform, resample_labels
+from ..registration import RegistrationSession, RigidScaleTransform, resample_labels
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -104,15 +104,12 @@ class MainWin(QtWidgets.QMainWindow):
         # (e.g. by registration).
         self._gerber_voxel_spacing_mm: tuple[float, float, float] | None = None
         self._gerber_material_id_vol_hwz: np.ndarray | None = None
-        self._registration_transform = None
-        self._registration_moving_spacing: tuple[float, float, float] | None = None
-        self._registration_fixed_spacing: tuple[float, float, float] | None = None
-        self._registration_fixed_shape: tuple[int, int, int] | None = None
+        self._registration_session = RegistrationSession()
         # self.model.sigCubeChanged.connect(
         #     lambda: self.viewer_3d_left.setDataCube(self.model.dataCube)
         # )
 
-        pgDict = dict(type="list", values={"True": True, "False": False})
+        pgDict = dict(type="list", limits={"True": True, "False": False})
         self._tblDelegate = FRPgParamDelegate(pgDict)
 
         self.tbl = QtWidgets.QTableView()
@@ -394,10 +391,19 @@ class MainWin(QtWidgets.QMainWindow):
                 )
             )
 
-        centerPanel = QtWidgets.QWidget()
-        cl = QtWidgets.QVBoxLayout(centerPanel)
+        self._mainWorkspacePage = QtWidgets.QWidget()
+        cl = QtWidgets.QVBoxLayout(self._mainWorkspacePage)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.addWidget(centerSplitter)
+
+        self.registrationPanel = RegistrationPanel(self._registration_session, parent=self)
+        self.registrationPanel.sigTransformAccepted.connect(self._onRegistrationAccepted)
+        self.registrationPanel.sigCloseRequested.connect(self._showMainWorkspace)
+        self._workspaceStack = QtWidgets.QStackedWidget()
+        self._workspaceStack.setObjectName("MainWorkspaceStack")
+        self._workspaceStack.addWidget(self._mainWorkspacePage)
+        self._workspaceStack.addWidget(self.registrationPanel)
+        self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
 
         # --- Right panel: axis buttons + brightness/contrast + 2D plot ---
         self.minSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -443,7 +449,7 @@ class MainWin(QtWidgets.QMainWindow):
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._plotDock)
 
         children = EasyWidget(
-            [leftPanel, centerPanel],
+            [leftPanel, self._workspaceStack],
             useSplitter=True,
             layout="H",
         )
@@ -734,10 +740,7 @@ class MainWin(QtWidgets.QMainWindow):
         # Any previously-accepted registration was fit to the OLD Gerber
         # geometry -- invalidate it so a stale transform can't silently be
         # applied to newly-(re)voxelized data via transferGerberLabels.
-        self._registration_transform = None
-        self._registration_moving_spacing = None
-        self._registration_fixed_spacing = None
-        self._registration_fixed_shape = None
+        self._registration_session.invalidate("Gerber geometry changed")
         return vol, layer_names, layer_slices, visual_entries
 
     @bind(file=dict(type="file", nameFilter="Stackup Files (*.json);;All Files (*)", value=""))
@@ -1171,25 +1174,20 @@ class MainWin(QtWidgets.QMainWindow):
             if proceed != QtWidgets.QMessageBox.Yes:
                 return
 
-        # No `parent=` here, matching RotateWindow's convention elsewhere in
-        # this file: a GLViewWidget-based top-level window parented to a live
-        # MainWin appears to share/break its GL rendering surface, leaving it
-        # blank -- confirmed via manual testing.
-        win = RegistrationWindow(
+        self.registrationPanel.setVolumes(
             self._gerber_intensity_hwz,
             self._gerber_voxel_spacing_mm,
             self.model.dataCube,
             self.model.spacing_xyz,
         )
-        self._registrationWindow = win  # keep a reference so it isn't garbage collected
-        win.sigTransformAccepted.connect(self._onRegistrationAccepted)
-        win.show()
+        self._workspaceStack.setCurrentWidget(self.registrationPanel)
+        self.statusBar().showMessage("Registration workspace active", 3000)
+
+    def _showMainWorkspace(self):
+        self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
+        self.statusBar().showMessage("Main workspace active", 3000)
 
     def _onRegistrationAccepted(self, transform: RigidScaleTransform):
-        self._registration_transform = transform
-        self._registration_moving_spacing = self._gerber_voxel_spacing_mm
-        self._registration_fixed_spacing = self.model.spacing_xyz
-        self._registration_fixed_shape = self.model.dataCube.shape
         QtWidgets.QMessageBox.information(
             self, "Registration Accepted",
             f"Transform stored: tx={transform.tx:.3f}mm ty={transform.ty:.3f}mm "
@@ -1198,7 +1196,7 @@ class MainWin(QtWidgets.QMainWindow):
         )
 
     def transferGerberLabels(self):
-        if self._registration_transform is None:
+        if self._registration_session.accepted_transform is None:
             QtWidgets.QMessageBox.information(
                 self, "No Registration",
                 "Use 'Register Gerber to Real CT...' and accept a transform first.",
@@ -1217,9 +1215,11 @@ class MainWin(QtWidgets.QMainWindow):
                 self, "No Real CT Data", "Load real CT data first."
             )
             return
-        if (
-            self.model.dataCube.shape != self._registration_fixed_shape
-            or self.model.spacing_xyz != self._registration_fixed_spacing
+        if not self._registration_session.is_compatible(
+            self._gerber_intensity_hwz,
+            self._gerber_voxel_spacing_mm,
+            self.model.dataCube,
+            self.model.spacing_xyz,
         ):
             QtWidgets.QMessageBox.information(
                 self, "Registration Out Of Date",
@@ -1231,10 +1231,10 @@ class MainWin(QtWidgets.QMainWindow):
 
         labels_hwz = resample_labels(
             self._gerber_material_id_vol_hwz,
-            self._registration_moving_spacing,
+            self._gerber_voxel_spacing_mm,
             self.model.dataCube.shape,
-            self._registration_fixed_spacing,
-            self._registration_transform,
+            self.model.spacing_xyz,
+            self._registration_session.accepted_transform,
         )
         rgba = colorize_material_labels(np.moveaxis(labels_hwz, -1, 0))
 
@@ -1253,29 +1253,38 @@ class MainWin(QtWidgets.QMainWindow):
         Registration tool can be exercised and checked against a known
         answer, since no real CT scan with a matching Gerber design exists
         yet to validate against."""
-        from ..tests.fixtures import make_synthetic_pair
+        from ..synthetic_registration import (
+            default_synthetic_registration_specs,
+            make_synthetic_registration_case,
+        )
 
-        pair = make_synthetic_pair()
+        spec = next(
+            spec
+            for spec in default_synthetic_registration_specs()
+            if spec.name == "combined"
+        )
+        pair = make_synthetic_registration_case(spec)
 
         self._current_rgba_base_left = None
-        self.model.setCube(pair["misaligned_ct_hwz"])
-        self.model.setSpacing(*pair["fixed_spacing"])
-        self.viewer_3d_left.setDataCube(pair["misaligned_ct_hwz"])
+        self.model.setCube(pair.fixed_hwz)
+        self.model.setSpacing(*pair.fixed_spacing)
+        self.viewer_3d_left.setDataCube(pair.fixed_hwz)
         self.viewer_3d_left.resetCamera()
 
-        self._gerber_intensity_hwz = pair["aligned_ct_hwz"]
-        self._gerber_voxel_spacing_mm = pair["gerber_spacing"]
-        self._gerber_material_id_vol_hwz = pair["gerber_material_ids_hwz"]
-        self.viewer_3d_right.setDataCube(pair["aligned_ct_hwz"])
+        self._gerber_intensity_hwz = pair.moving_hwz
+        self._gerber_voxel_spacing_mm = pair.moving_spacing
+        self._gerber_material_id_vol_hwz = pair.moving_labels_hwz
+        self._registration_session.invalidate("Synthetic demo reloaded")
+        self.viewer_3d_right.setDataCube(pair.moving_hwz)
         self.viewer_3d_right.resetCamera()
 
-        t = pair["known_transform"]
+        t = pair.known_transform
         QtWidgets.QMessageBox.information(
             self, "Synthetic Registration Demo Loaded",
             "Known answer (aligns RIGHT onto LEFT):\n"
             f"tx={t.tx:.3f}mm  ty={t.ty:.3f}mm  tz={t.tz:.3f}mm\n"
             f"rot_z={t.rot_z_deg:.2f}deg  scale={t.scale:.3f}\n\n"
-            "Open 'Register Gerber to Real CT...' and dial the sliders to match.",
+            "Open 'Register Gerber to Real CT...' to use the embedded workspace.",
         )
 
     def fixRotation(self):

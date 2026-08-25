@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
-from qtextras import EasyWidget
 
 from ..registration import (
+    RegistrationSession,
     RigidScaleTransform,
     propose_initial_transform,
     registration_quality,
@@ -14,11 +14,12 @@ from ..registration import (
 from .view3d import PCBViewer3D
 
 
-class RegistrationWindow(QtWidgets.QMainWindow):
-    """Reviewable 5-DOF (XYZ translate + Z-rotation + uniform scale) alignment
-    tool: bounded initial suggestion plus a live red/green manual overlay of
-    the Gerber-derived MOVING volume against the real-CT FIXED volume, following
-    the non-modal preview pattern in `cubecorrections.rotation.RotateWindow`.
+class RegistrationPanel(QtWidgets.QWidget):
+    """Embedded 5-DOF Gerber/CT registration workspace.
+
+    The panel provides a bounded initial suggestion and live red/green manual
+    overlay without owning a top-level window. ``RegistrationSession`` keeps
+    the edit and accepted transform independent from widget visibility.
 
     The live preview resamples/normalizes a downsampled copy of both volumes
     (see `_downsample_for_preview`) and debounces slider input (see
@@ -29,25 +30,130 @@ class RegistrationWindow(QtWidgets.QMainWindow):
     """
 
     sigTransformAccepted = QtCore.Signal(object)  # RigidScaleTransform
+    sigCloseRequested = QtCore.Signal()
 
     _PREVIEW_MAX_DIM = 96
     _PREVIEW_DEBOUNCE_MS = 80
 
     def __init__(
         self,
+        session: RegistrationSession | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.session = session or RegistrationSession()
+        self.moving_hwz: np.ndarray | None = None
+        self.moving_spacing: tuple[float, float, float] | None = None
+        self.fixed_hwz: np.ndarray | None = None
+        self.fixed_spacing: tuple[float, float, float] | None = None
+        self._preview_moving: np.ndarray | None = None
+        self._preview_moving_spacing: tuple[float, float, float] | None = None
+        self._preview_fixed: np.ndarray | None = None
+        self._preview_fixed_spacing: tuple[float, float, float] | None = None
+        self._fixed_norm: np.ndarray | None = None
+        self._proposalSummary = ""
+
+        self._previewTimer = QtCore.QTimer(self)
+        self._previewTimer.setSingleShot(True)
+        self._previewTimer.timeout.connect(self._updatePreview)
+
+        def _spinbox(value, bounds, step):
+            sbox = pg.SpinBox(value=value)
+            sbox.setOpts(bounds=bounds, step=step)
+            return sbox
+
+        self.txSbox = _spinbox(0.0, (-1.0, 1.0), 0.05)
+        self.tySbox = _spinbox(0.0, (-1.0, 1.0), 0.05)
+        self.tzSbox = _spinbox(0.0, (-1.0, 1.0), 0.02)
+        self.rotSbox = _spinbox(0.0, (-180.0, 180.0), 0.5)
+        self.scaleSbox = _spinbox(1.0, (0.2, 5.0), 0.01)
+
+        self.overlayViewer = PCBViewer3D()
+
+        self.qualityLabel = QtWidgets.QLabel(
+            "Load CT and Gerber data, then activate registration."
+        )
+        self.qualityLabel.setWordWrap(True)
+        self.backBtn = QtWidgets.QPushButton("Back to Main Workspace")
+        self.suggestBtn = QtWidgets.QPushButton("Suggest Initial Alignment")
+        self.resetBtn = QtWidgets.QPushButton("Reset")
+        self.acceptBtn = QtWidgets.QPushButton("Accept")
+
+        title = QtWidgets.QLabel("Gerber to Real CT Registration")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        header = QtWidgets.QHBoxLayout()
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(self.backBtn)
+
+        controls = QtWidgets.QGridLayout()
+        for row, (label, spinbox) in enumerate(
+            (
+                ("Tx (mm)", self.txSbox),
+                ("Ty (mm)", self.tySbox),
+                ("Tz (mm)", self.tzSbox),
+                ("Rot Z (deg)", self.rotSbox),
+                ("Scale", self.scaleSbox),
+            )
+        ):
+            controls.addWidget(QtWidgets.QLabel(label), row, 0)
+            controls.addWidget(spinbox, row, 1)
+
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.addWidget(self.suggestBtn)
+        action_row.addWidget(self.resetBtn)
+        action_row.addWidget(self.acceptBtn)
+        action_row.addStretch()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addLayout(header)
+        layout.addWidget(self.overlayViewer, stretch=1)
+        layout.addLayout(controls)
+        layout.addWidget(self.qualityLabel)
+        layout.addLayout(action_row)
+
+        for sbox in (self.txSbox, self.tySbox, self.tzSbox, self.rotSbox, self.scaleSbox):
+            sbox.sigValueChanging.connect(lambda *_: self._schedulePreviewUpdate())
+
+        self.backBtn.clicked.connect(self.sigCloseRequested.emit)
+        self.suggestBtn.clicked.connect(self._suggestInitialAlignment)
+        self.resetBtn.clicked.connect(self._resetSliders)
+        self.acceptBtn.clicked.connect(self._onAccept)
+
+        self._setControlsEnabled(False)
+
+    def _setControlsEnabled(self, enabled: bool) -> None:
+        for widget in (
+            self.txSbox,
+            self.tySbox,
+            self.tzSbox,
+            self.rotSbox,
+            self.scaleSbox,
+            self.suggestBtn,
+            self.resetBtn,
+            self.acceptBtn,
+        ):
+            widget.setEnabled(enabled)
+
+    def setVolumes(
+        self,
         moving_hwz: np.ndarray,
         moving_spacing,
         fixed_hwz: np.ndarray,
         fixed_spacing,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Register Gerber to Real CT")
-        self.moving_hwz = moving_hwz
-        self.moving_spacing = tuple(moving_spacing)
-        self.fixed_hwz = fixed_hwz
-        self.fixed_spacing = tuple(fixed_spacing)
+    ) -> bool:
+        """Configure the panel, preserving edits when the inputs are unchanged.
 
+        Returns True when a new input signature reset the session.
+        """
+        reset = self.session.configure(
+            moving_hwz, moving_spacing, fixed_hwz, fixed_spacing
+        )
+        self.moving_hwz = moving_hwz
+        self.moving_spacing = tuple(float(value) for value in moving_spacing)
+        self.fixed_hwz = fixed_hwz
+        self.fixed_spacing = tuple(float(value) for value in fixed_spacing)
         self._preview_moving, self._preview_moving_spacing = self._downsample_for_preview(
             moving_hwz, self.moving_spacing
         )
@@ -55,63 +161,25 @@ class RegistrationWindow(QtWidgets.QMainWindow):
             fixed_hwz, self.fixed_spacing
         )
         self._fixed_norm = self._normalize(self._preview_fixed)
+
+        extent_mm = [
+            size * spacing for size, spacing in zip(fixed_hwz.shape, self.fixed_spacing)
+        ]
+        self.txSbox.setOpts(bounds=(-extent_mm[0], extent_mm[0]))
+        self.tySbox.setOpts(bounds=(-extent_mm[1], extent_mm[1]))
+        self.tzSbox.setOpts(bounds=(-extent_mm[2], extent_mm[2]))
         self._proposalSummary = ""
-
-        self._previewTimer = QtCore.QTimer(self)
-        self._previewTimer.setSingleShot(True)
-        self._previewTimer.timeout.connect(self._updatePreview)
-
-        extent_mm = [s * d for s, d in zip(fixed_hwz.shape, self.fixed_spacing)]
-
-        def _spinbox(value, bounds, step):
-            sbox = pg.SpinBox(value=value)
-            sbox.setOpts(bounds=bounds, step=step)
-            return sbox
-
-        self.txSbox = _spinbox(0.0, (-extent_mm[0], extent_mm[0]), 0.05)
-        self.tySbox = _spinbox(0.0, (-extent_mm[1], extent_mm[1]), 0.05)
-        self.tzSbox = _spinbox(0.0, (-extent_mm[2], extent_mm[2]), 0.02)
-        self.rotSbox = _spinbox(0.0, (-180.0, 180.0), 0.5)
-        self.scaleSbox = _spinbox(1.0, (0.2, 5.0), 0.01)
-
-        self.overlayViewer = PCBViewer3D()
-
-        self.qualityLabel = QtWidgets.QLabel(
-            "Alignment score: calculating... (compare transforms; review the overlay)"
-        )
-        self.qualityLabel.setWordWrap(True)
-        self.suggestBtn = QtWidgets.QPushButton("Suggest Initial Alignment")
-        self.resetBtn = QtWidgets.QPushButton("Reset")
-        self.acceptBtn = QtWidgets.QPushButton("Accept")
-
-        EasyWidget.buildMainWindow(
-            [
-                self.overlayViewer,
-                [
-                    [QtWidgets.QLabel("Tx (mm)"), self.txSbox],
-                    [QtWidgets.QLabel("Ty (mm)"), self.tySbox],
-                    [QtWidgets.QLabel("Tz (mm)"), self.tzSbox],
-                    [QtWidgets.QLabel("Rot Z (deg)"), self.rotSbox],
-                    [QtWidgets.QLabel("Scale"), self.scaleSbox],
-                ],
-                self.qualityLabel,
-                [self.suggestBtn, self.resetBtn, self.acceptBtn],
-            ],
-            window=self,
-        )
-
-        for sbox in (self.txSbox, self.tySbox, self.tzSbox, self.rotSbox, self.scaleSbox):
-            sbox.sigValueChanging.connect(lambda *_: self._schedulePreviewUpdate())
-
-        self.suggestBtn.clicked.connect(self._suggestInitialAlignment)
-        self.resetBtn.clicked.connect(self._resetSliders)
-        self.acceptBtn.clicked.connect(self._onAccept)
-
+        if self.session.proposal is not None:
+            proposal = self.session.proposal
+            self._proposalSummary = (
+                f"suggestion {proposal.confidence} confidence, "
+                f"search gain {proposal.improvement:+.3f}"
+            )
+        self._setTransform(self.session.current_transform)
+        self._setControlsEnabled(True)
         self._updatePreview()
-        # Frame the volume once at startup -- resetting on every slider
-        # change would fight the user's own camera pan/zoom while they're
-        # adjusting alignment.
         self.overlayViewer.resetCamera()
+        return reset
 
     def currentTransform(self) -> RigidScaleTransform:
         return RigidScaleTransform(
@@ -124,6 +192,7 @@ class RegistrationWindow(QtWidgets.QMainWindow):
 
     def _resetSliders(self):
         self._proposalSummary = ""
+        self.session.proposal = None
         self.txSbox.setValue(0.0)
         self.tySbox.setValue(0.0)
         self.tzSbox.setValue(0.0)
@@ -141,6 +210,8 @@ class RegistrationWindow(QtWidgets.QMainWindow):
 
     def _suggestInitialAlignment(self):
         """Run the bounded search and leave its result open for review."""
+        if self._preview_moving is None or self._preview_fixed is None:
+            return
         self.suggestBtn.setEnabled(False)
         self.qualityLabel.setText("Searching for an initial alignment...")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -156,6 +227,7 @@ class RegistrationWindow(QtWidgets.QMainWindow):
                 f"suggestion {proposal.confidence} confidence, "
                 f"search gain {proposal.improvement:+.3f}"
             )
+            self.session.record_proposal(proposal)
             self._setTransform(proposal.transform)
             self._updatePreview()
         except Exception as error:
@@ -204,6 +276,14 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         self._previewTimer.start(self._PREVIEW_DEBOUNCE_MS)
 
     def _updatePreview(self):
+        if (
+            self._preview_moving is None
+            or self._preview_moving_spacing is None
+            or self._preview_fixed is None
+            or self._preview_fixed_spacing is None
+            or self._fixed_norm is None
+        ):
+            return
         transform = self.currentTransform()
         resampled_moving = resample_volume(
             self._preview_moving,
@@ -216,6 +296,7 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         moving_norm = self._normalize(resampled_moving)
         score = registration_quality(self._preview_fixed, resampled_moving)
         self._currentQualityScore = score
+        self.session.update_current(transform, score)
         suffix = f" | {self._proposalSummary}" if self._proposalSummary else ""
         self.qualityLabel.setText(
             f"Alignment score: {score:.3f}{suffix}. "
@@ -232,4 +313,5 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         self.overlayViewer.setRGBADataCube(rgba)
 
     def _onAccept(self):
-        self.sigTransformAccepted.emit(self.currentTransform())
+        self._updatePreview()
+        self.sigTransformAccepted.emit(self.session.accept())
