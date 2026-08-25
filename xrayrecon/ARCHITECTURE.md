@@ -80,6 +80,21 @@ The central hub of the application. It:
 - Sets up the UI (plots, tables, 3D viewer).
 - Registers tools (ParameterEditor) for actions like loading files (NPY, Gerber), creating S3A projects, and fixing rotation.
 - Connects signals from the selection table to update the 3D view.
+- Owns a central stacked workspace: the normal dual-pane CT/Gerber view and the
+  embedded `RegistrationPanel`. Registration activation switches pages without
+  creating another top-level window.
+
+### Registration
+
+- `xrayrecon.registration.RegistrationSession` owns the current edit, explicit
+  accepted transform, score/proposal metadata, and moving/fixed input signature.
+- `xrayrecon.gui.registration.RegistrationPanel` is an embedded `QWidget` that
+  renders the overlay and edits the shared session.
+- `MainWin` validates the accepted session against current array identities,
+  shapes, and physical spacing before label transfer. New same-shape datasets
+  are therefore detected as stale.
+- `xrayrecon.synthetic_registration` provides production-owned deterministic
+  demo and regression cases; application code does not import from `tests`.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

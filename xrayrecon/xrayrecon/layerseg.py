@@ -21,7 +21,8 @@ def templateMatchScores(cube: np.ndarray):
         score = cv.matchTemplate(prevSlice, curSlice, cv.TM_CCOEFF)
         scores.append(score[0, 0])
     scores = np.array(scores)
-    if scores.max() != 0:
+    scores = np.nan_to_num(scores)
+    if scores.size and scores.max() != 0:
         scores /= scores.max()
     return scores
 
@@ -30,7 +31,11 @@ def layerInfoFromScores(scores: np.ndarray):
     diff2 = np.diff(scores, 2)
     # Pad so that indices match locations in `scores`
     diff2 = np.concatenate([[0], diff2, [0]])
-    diff2 /= diff2.max()
+    max_curvature = diff2.max() if diff2.size else 0.0
+    if max_curvature > 0:
+        diff2 /= max_curvature
+    else:
+        diff2 = np.zeros_like(diff2)
     peaks, _ = find_peaks(diff2, height=0.2)
     # Since 'peaks' should represent pairs of start, stop idxs, make sure there are
     # an even number of them
@@ -69,7 +74,20 @@ def layerInfoFromScores(scores: np.ndarray):
     # Make sure layers start and stop at beginning and end of cube
     layerSlices[0][0] = 0
     layerSlices[-1][-1] = len(scores) - 1
-    layerSlices = [np.clip(np.arange(s[0], s[1] + 1, dtype=int), 0, len(scores)) for s in layerSlices]
+    expanded = [
+        np.unique(np.clip(np.arange(s[0], s[1] + 1, dtype=int), 0, len(scores)))
+        for s in layerSlices
+    ]
+    valid_layers = [
+        (name, slices)
+        for name, slices in zip(layerNames, expanded)
+        if slices.size > 0
+    ]
+    if valid_layers:
+        layerNames, layerSlices = map(list, zip(*valid_layers))
+    else:
+        layerNames = ["Region 1"]
+        layerSlices = [np.arange(len(scores) + 1, dtype=int)]
     ret = {"Layer Name": layerNames, "Slices": layerSlices}
     return ret
 
@@ -159,9 +177,11 @@ def getFeatures(scoresLst: np.ndarray):
 
 def _peakFeatures(score):
     # Rule out generally bad scores
-    if score.max() == 0:
+    if score.size == 0 or not np.all(np.isfinite(score)) or score.max() == 0:
         return 0
     peaks, features = find_peaks(score, height=0.2)
+    if len(peaks) < 2:
+        return 0
     widths = peak_widths(score, peaks)[0].astype(int)
     proms = peak_prominences(score, peaks)[0]
     widths[widths == 0] = 1
@@ -181,6 +201,9 @@ def _peakFeatures(score):
         y = norm.pdf(x, mean, std)
         errs.append(np.abs(gausPortion - y[: len(gausPortion)]).mean())
     peakFitErr = np.mean(errs)
+
+    if not np.isfinite(peakFitErr) or peakFitErr <= np.finfo(float).eps:
+        return 0
 
     return numPeaks * avgHeight * avgDist * avgProm * numPeaks / peakFitErr
 

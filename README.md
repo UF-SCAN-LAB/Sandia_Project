@@ -56,10 +56,10 @@ regression loop.
 - **Gerber stackup + materials** (`gui/stackup_editor.py`, `stackup.py`,
   `voxelizer.py`, `materials.py`): assign a material to every Gerber layer
   and voxelize into a 3D volume.
-- **Registration** (`registration.py`, `gui/registration.py`): a manual
-  5-DOF (XYZ translate + Z-rotation + uniform scale) alignment tool with a
-  live red/green overlay preview and a bounded initial-alignment suggestion,
-  for registering the Gerber model to real CT data.
+- **Embedded registration** (`registration.py`, `gui/registration.py`): an
+  in-application 5-DOF (XYZ translate + Z-rotation + uniform scale) workspace
+  with a live red/green overlay, bounded initial-alignment suggestion, explicit
+  acceptance, and stale-input protection.
 - **Label transfer**: once registered, the Gerber model's known per-voxel
   materials are resampled onto the real CT grid to auto-label it.
 - **Simulated X-ray / CT bridge** (`ct_simulation.py`): a true Radon +
@@ -86,6 +86,7 @@ xrayrecon/
 ├── material_seg.py            # Threshold-based material segmentation of a volume
 ├── multimaterial.py           # Multi-material config (per-threshold color/material)
 ├── registration.py            # Rigid+scale transform, mm-based volume/label resampling
+├── synthetic_registration.py  # Deterministic registration demos/regression cases
 ├── ct_simulation.py           # Radon + FBP simulation of a real CT scan
 ├── alvarez_macovski.py        # Dual-energy decomposition, colorization, classification
 ├── gerber_utils.py            # Gerber file parsing helpers
@@ -103,7 +104,7 @@ xrayrecon/
     ├── table.py              # Layer selection table
     ├── stackup_editor.py     # Non-modal Gerber layer/material assignment table
     ├── spacing_dialog.py     # Dialog for entering real-CT voxel spacing (mm/voxel)
-    ├── registration.py       # RegistrationWindow — suggested/manual alignment tool
+    ├── registration.py       # Embedded RegistrationPanel workspace
     ├── am_plot_window.py     # Alvarez-Macovski ground-truth-vs-recovered comparison plot
     └── helpers.py            # Shared GUI utilities and phantom data generation
 ```
@@ -111,8 +112,9 @@ xrayrecon/
 ## Confidence-Guided Registration
 
 Open **Register Gerber to Real CT...** after loading both volumes and confirming
-their voxel spacing. The registration window continuously displays an alignment
-score from `0` to `1`. **Suggest Initial Alignment** performs a deterministic,
+their voxel spacing. The main workspace switches to the embedded registration
+panel, which continuously displays an alignment score from `0` to `1`.
+**Suggest Initial Alignment** performs a deterministic,
 bounded search over XYZ translation, in-plane rotation, and uniform scale, then
 places the best result in the existing controls for manual review. It does not
 accept the transform or transfer material labels.
@@ -132,3 +134,10 @@ differences may produce a low-confidence or incorrect suggestion. Adjust the
 five controls directly to override it, use **Reset** to return to identity, and
 select **Accept** only after reviewing the overlay. Label transfer remains a
 separate explicit action in the main window.
+
+Use **Back to Main Workspace** to return to the normal dual-pane view. The
+current edit is preserved while the CT/Gerber inputs and physical spacing remain
+unchanged; replacing either dataset invalidates stale accepted registration.
+
+See [`xrayrecon/REGRESSION_TESTING.md`](xrayrecon/REGRESSION_TESTING.md) for the
+test tiers, synthetic-case contract, warning policy, and CI expectations.

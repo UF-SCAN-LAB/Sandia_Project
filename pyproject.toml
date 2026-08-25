@@ -45,3 +45,7 @@ markers = [
     "gui: headless Qt interaction tests",
     "slow: tests intentionally excluded from the fast development loop",
 ]
+filterwarnings = [
+    "error::RuntimeWarning:xrayrecon\\..*",
+    "error::FutureWarning:xrayrecon\\..*",
+]
