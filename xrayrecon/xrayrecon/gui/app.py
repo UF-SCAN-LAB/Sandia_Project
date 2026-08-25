@@ -47,6 +47,11 @@ from ..alvarez_macovski import (
     colorize_by_material,
     colorize_material_labels,
 )
+from ..am_acquisition import AMAcquisitionConfig
+from ..am_calibration import (
+    fit_calibration_from_result,
+    make_am_calibration_phantom,
+)
 from ..registration import RegistrationSession, RigidScaleTransform, resample_labels
 
 pg.setConfigOption("imageAxisOrder", "row-major")
@@ -101,6 +106,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._am_result: dict | None = None
         self._showcase_am_volume_zhw2: np.ndarray | None = None
         self._showcase_material_labels_hwz: np.ndarray | None = None
+        self._showcase_am_calibration_model = None
         # mm/voxel (x, y, z) captured at voxelization time -- discarded by
         # Voxelizer itself, so this is the only place it survives for reuse
         # (e.g. by registration).
@@ -920,10 +926,16 @@ class MainWin(QtWidgets.QMainWindow):
         if self._am_result is None:
             return
         zeff_vol = self._am_result.get(
-            "zeff_regularized", self._am_result["zeff_recovered"]
+            "zeff_calibrated",
+            self._am_result.get(
+                "zeff_regularized", self._am_result["zeff_recovered"]
+            ),
         )
         rhoe_vol = self._am_result.get(
-            "rhoe_regularized", self._am_result["rhoe_recovered"]
+            "rhoe_calibrated",
+            self._am_result.get(
+                "rhoe_regularized", self._am_result["rhoe_recovered"]
+            ),
         )
 
         if self.amColorZeffBtn.isChecked():
@@ -1363,10 +1375,16 @@ class MainWin(QtWidgets.QMainWindow):
         )
         QtWidgets.QApplication.processEvents()
         try:
-            self._am_result = simulate_am_volume(
-                self._showcase_am_volume_zhw2,
+            calibration = self._buildShowcaseAMCalibration()
+            acquisition = AMAcquisitionConfig.industrial_default(
                 num_angles=64,
+                calibration_id=calibration.calibration_id,
             )
+            raw_result = simulate_am_volume(
+                self._showcase_am_volume_zhw2,
+                config=acquisition,
+            )
+            self._am_result = calibration.apply(raw_result)
             self._renderAMVolume()
             self.viewer_3d_left.setCameraTop()
             self.materialLegendWidget.setVisible(True)
@@ -1399,6 +1417,44 @@ class MainWin(QtWidgets.QMainWindow):
             )
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+
+    def _buildShowcaseAMCalibration(self):
+        """Fit and cache the documented synthetic reference calibration."""
+        if self._showcase_am_calibration_model is not None:
+            return self._showcase_am_calibration_model
+        all_materials = (
+            "FR4",
+            "ALUMINA",
+            "ALUMINUM",
+            "COPPER",
+            "TIN",
+            "TUNGSTEN",
+            "GOLD",
+        )
+        training_materials = (
+            "FR4",
+            "ALUMINA",
+            "COPPER",
+            "TIN",
+            "TUNGSTEN",
+        )
+        labels = make_am_calibration_phantom(all_materials, size=72)
+        volume = material_labels_to_zeff_rhoe(labels)
+        training_result = simulate_am_volume(
+            volume,
+            config=AMAcquisitionConfig.industrial_default(
+                num_angles=96,
+                photon_count=2_000_000,
+                random_seed=71,
+            ),
+        )
+        self._showcase_am_calibration_model = fit_calibration_from_result(
+            training_result,
+            labels,
+            training_materials,
+            calibration_id="synthetic-am-material-v1",
+        )
+        return self._showcase_am_calibration_model
 
     def _loadSyntheticRegistrationDemo(self):
         """Backward-compatible entry point retained for scripts/tests."""

@@ -26,9 +26,15 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         self.backBtn = QtWidgets.QPushButton("Back to volume workspace")
         self.backBtn.clicked.connect(self.sigCloseRequested)
         self.modeCombo = QtWidgets.QComboBox()
+        self.modeCombo.addItem("Calibrated quantitative", "calibrated")
         self.modeCombo.addItem("Material-regularized interpretation", "regularized")
         self.modeCombo.addItem("Raw inversion (audit)", "raw")
         self.modeCombo.currentIndexChanged.connect(self._draw)
+        self.qualityCombo = QtWidgets.QComboBox()
+        self.qualityCombo.addItem("Z-effective 90% uncertainty", "zeff_uncertainty")
+        self.qualityCombo.addItem("Electron-density 90% uncertainty", "rhoe_uncertainty")
+        self.qualityCombo.addItem("Projection residual", "residual")
+        self.qualityCombo.currentIndexChanged.connect(self._draw)
 
         self.sliceSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.sliceSlider.setRange(0, 0)
@@ -37,12 +43,18 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         self.metricSummary = QtWidgets.QLabel("Run a decomposition to inspect it here.")
         self.metricSummary.setWordWrap(True)
         self.metricSummary.setStyleSheet("color: #555;")
+        self.acquisitionSummary = QtWidgets.QLabel("Acquisition metadata unavailable")
+        self.acquisitionSummary.setWordWrap(True)
+        self.calibrationStatus = QtWidgets.QLabel("Uncalibrated")
+        self.calibrationStatus.setWordWrap(True)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(self.backBtn)
         controls.addSpacing(12)
         controls.addWidget(QtWidgets.QLabel("Display:"))
         controls.addWidget(self.modeCombo)
+        controls.addWidget(QtWidgets.QLabel("Quality map:"))
+        controls.addWidget(self.qualityCombo)
         controls.addSpacing(12)
         controls.addWidget(self.sliceLabel)
         controls.addWidget(self.sliceSlider, 1)
@@ -55,6 +67,8 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
         layout.addLayout(controls)
+        layout.addWidget(self.acquisitionSummary)
+        layout.addWidget(self.calibrationStatus)
         layout.addWidget(self.metricSummary)
         layout.addWidget(self.canvas, 1)
 
@@ -75,6 +89,43 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             raise ValueError("AM quantitative arrays must share a (Z, H, W) shape")
 
         self.result = result
+        config = getattr(result, "acquisition_config", None)
+        if config is None:
+            self.acquisitionSummary.setText("Acquisition metadata unavailable")
+        else:
+            noise = (
+                f"{config.photon_count:,} photons/view (seed {config.random_seed})"
+                if config.photon_count is not None
+                else "noise-free forward model"
+            )
+            self.acquisitionSummary.setText(
+                f"{config.source_kind.title()} acquisition · "
+                f"{config.low_spectrum.label} / {config.high_spectrum.label} · "
+                f"{config.num_angles} views · {config.pixel_size_cm * 10:.3f} mm pixels · {noise}"
+            )
+        calibration = getattr(result, "calibration_model", None)
+        if calibration is None:
+            self.calibrationStatus.setText(
+                "Calibration: none. Raw and material-regularized outputs are available; "
+                "no quantitative uncertainty interval is claimed."
+            )
+            self.calibrationStatus.setStyleSheet("color: #9a6700;")
+            self.modeCombo.setCurrentIndex(1)
+            self.qualityCombo.setCurrentIndex(2)
+        else:
+            source_note = (
+                "synthetic reference calibration; measured scanner data not supplied"
+                if getattr(calibration, "calibration_source", "synthetic_reference")
+                == "synthetic_reference"
+                else "measured reference calibration"
+            )
+            self.calibrationStatus.setText(
+                f"Calibration: {calibration.calibration_id} · nominal "
+                f"{calibration.nominal_coverage:.0%} intervals · {source_note}."
+            )
+            self.calibrationStatus.setStyleSheet("color: #176b2c;")
+            self.modeCombo.setCurrentIndex(0)
+            self.qualityCombo.setCurrentIndex(0)
         representative = AMPlotWindow._pick_representative_slice(
             result.get("zeff_ground_truth", result["zeff_recovered"])
         )
@@ -90,17 +141,52 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         result = self.result
         index = self.sliceSlider.value()
         self.sliceLabel.setText(f"Slice {index + 1} of {self.sliceSlider.maximum() + 1}")
-        regularized = self.modeCombo.currentData() == "regularized"
-        z_key = "zeff_regularized" if regularized and "zeff_regularized" in result else "zeff_recovered"
-        r_key = "rhoe_regularized" if regularized and "rhoe_regularized" in result else "rhoe_recovered"
-        mode_name = "Material-regularized" if regularized else "Raw inversion"
+        mode = self.modeCombo.currentData()
+        if mode == "calibrated" and "zeff_calibrated" in result:
+            z_key, r_key, mode_name = (
+                "zeff_calibrated",
+                "rhoe_calibrated",
+                "Calibrated quantitative",
+            )
+        elif mode == "regularized":
+            z_key, r_key, mode_name = (
+                "zeff_regularized",
+                "rhoe_regularized",
+                "Material-regularized",
+            )
+        else:
+            z_key, r_key, mode_name = (
+                "zeff_recovered",
+                "rhoe_recovered",
+                "Raw inversion",
+            )
 
         zeff = result[z_key][index]
         rhoe = result[r_key][index]
         zeff_gt = result.get("zeff_ground_truth")
         rhoe_gt = result.get("rhoe_ground_truth")
-        confidence = result["confidence"][index]
+        confidence = result.get("confidence_calibrated", result["confidence"])[index]
         residual = result["projection_residual"][index]
+        quality_mode = self.qualityCombo.currentData()
+        if quality_mode == "zeff_uncertainty" and "zeff_interval_upper" in result:
+            quality_image = 0.5 * (
+                result["zeff_interval_upper"][index]
+                - result["zeff_interval_lower"][index]
+            )
+            quality_title = "Z-effective 90% half-width"
+            quality_label = "Z-effective"
+        elif quality_mode == "rhoe_uncertainty" and "rhoe_interval_upper" in result:
+            quality_image = 0.5 * (
+                result["rhoe_interval_upper"][index]
+                - result["rhoe_interval_lower"][index]
+            )
+            quality_title = "Electron-density 90% half-width"
+            quality_label = "rho_e / rho_e,water"
+        else:
+            quality_image = residual
+            quality_title = "Projection residual"
+            quality_label = "normalized mismatch"
+        quality_max = max(float(np.percentile(quality_image, 99)), 1e-6)
 
         self.figure.clear()
         axes = self.figure.subplots(2, 3)
@@ -136,7 +222,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
                 "rho_e / rho_e,water",
             ),
             (axes[1, 1], rhoe, f"{mode_name} electron density", "cividis", 0.0, rmax, "rho_e / rho_e,water"),
-            (axes[1, 2], residual, "Projection residual", "magma", 0.0, 1.0, "normalized mismatch"),
+            (axes[1, 2], quality_image, quality_title, "magma", 0.0, quality_max, quality_label),
         ]
         for axis, image, title, cmap, vmin, vmax, label in panels:
             artist = axis.imshow(image, cmap=cmap, origin="lower", vmin=vmin, vmax=vmax)
@@ -157,7 +243,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         result = self.result
         zeff_gt = result.get("zeff_ground_truth")
         rhoe_gt = result.get("rhoe_ground_truth")
-        confidence = result["confidence"][index]
+        confidence = result.get("confidence_calibrated", result["confidence"])[index]
         residual = result["projection_residual"][index]
         summary = (
             f"Median confidence {np.median(confidence):.2f} · "
@@ -175,9 +261,29 @@ class AMAnalysisPanel(QtWidgets.QWidget):
                     / np.maximum(rhoe_gt[index][mask], 1e-6)
                 )
                 summary += (
-                    f"Synthetic-truth median errors: Z-effective {z_error:.1%}; "
+                    f"Synthetic-truth slice errors (including boundaries): "
+                    f"Z-effective {z_error:.1%}; "
                     f"relative electron density {r_error:.1%}."
                 )
+                if "zeff_interval_lower" in result:
+                    z_covered = (
+                        result["zeff_interval_lower"][index][mask]
+                        <= zeff_gt[index][mask]
+                    ) & (
+                        zeff_gt[index][mask]
+                        <= result["zeff_interval_upper"][index][mask]
+                    )
+                    r_covered = (
+                        result["rhoe_interval_lower"][index][mask]
+                        <= rhoe_gt[index][mask]
+                    ) & (
+                        rhoe_gt[index][mask]
+                        <= result["rhoe_interval_upper"][index][mask]
+                    )
+                    summary += (
+                        f" Empirical interval coverage: Z-effective {np.mean(z_covered):.1%}; "
+                        f"electron density {np.mean(r_covered):.1%}."
+                    )
         self.metricSummary.setText(summary)
 
 
