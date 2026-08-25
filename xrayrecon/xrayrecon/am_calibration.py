@@ -1,8 +1,10 @@
 """Cross-validated material calibration and empirical AM uncertainty."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Iterable
+from dataclasses import asdict, dataclass, replace
+import json
+from pathlib import Path
+from typing import Any, Iterable
 
 import numpy as np
 from scipy.ndimage import binary_erosion
@@ -43,6 +45,7 @@ class AMCalibrationModel:
 
     calibration_id: str
     training_materials: tuple[str, ...]
+    acquisition_fingerprint: str
     zeff_log_slope: float
     zeff_log_intercept: float
     rhoe_slope: float
@@ -53,6 +56,83 @@ class AMCalibrationModel:
     zeff_input_mode: str = "material_regularized"
     rhoe_input_mode: str = "raw"
     calibration_source: str = "synthetic_reference"
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        calibration_id = str(self.calibration_id).strip()
+        training_materials = tuple(
+            str(name).strip().upper() for name in self.training_materials
+        )
+        prefix, separator, digest = str(self.acquisition_fingerprint).partition(":")
+        if not calibration_id:
+            raise ValueError("calibration_id must not be empty")
+        if len(training_materials) < 3 or any(not name for name in training_materials):
+            raise ValueError("calibration requires at least three named training materials")
+        if len(set(training_materials)) != len(training_materials):
+            raise ValueError("calibration training materials must be unique")
+        if (
+            prefix != "am-physics-v1"
+            or separator != ":"
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("invalid AM acquisition physics fingerprint")
+        numeric_values = (
+            self.zeff_log_slope,
+            self.zeff_log_intercept,
+            self.rhoe_slope,
+            self.rhoe_intercept,
+            self.zeff_uncertainty_scale,
+            self.rhoe_uncertainty_scale,
+            self.nominal_coverage,
+        )
+        if not np.isfinite(numeric_values).all():
+            raise ValueError("calibration coefficients must be finite")
+        if self.zeff_log_slope <= 0 or self.rhoe_slope <= 0:
+            raise ValueError("calibration response slopes must be positive")
+        if self.zeff_uncertainty_scale <= 0 or self.rhoe_uncertainty_scale <= 0:
+            raise ValueError("calibration uncertainty scales must be positive")
+        if not 0 < self.nominal_coverage < 1:
+            raise ValueError("nominal_coverage must be between zero and one")
+        valid_modes = {"raw", "material_regularized"}
+        if self.zeff_input_mode not in valid_modes or self.rhoe_input_mode not in valid_modes:
+            raise ValueError("calibration input mode must be raw or material_regularized")
+        if self.calibration_source not in {"synthetic_reference", "measured_reference"}:
+            raise ValueError("unsupported calibration_source")
+        if self.schema_version != 1:
+            raise ValueError("unsupported calibration schema_version")
+        object.__setattr__(self, "calibration_id", calibration_id)
+        object.__setattr__(self, "training_materials", training_materials)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["artifact_kind"] = "xrayrecon.am_calibration"
+        payload["training_materials"] = list(self.training_materials)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "AMCalibrationModel":
+        data = dict(payload)
+        if data.pop("artifact_kind", None) != "xrayrecon.am_calibration":
+            raise ValueError("invalid AM calibration artifact kind")
+        try:
+            data["training_materials"] = tuple(data["training_materials"])
+            return cls(**data)
+        except (KeyError, TypeError) as error:
+            raise ValueError(f"invalid AM calibration bundle: {error}") from error
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=True, allow_nan=False)
+
+    @classmethod
+    def from_json(cls, payload: str) -> "AMCalibrationModel":
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid AM calibration JSON: {error}") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("AM calibration JSON must contain an object")
+        return cls.from_dict(decoded)
 
     def calibrate_zeff(self, values: np.ndarray) -> np.ndarray:
         array = np.asarray(values, dtype=np.float32)
@@ -181,7 +261,8 @@ def samples_from_result(
 
 
 def fit_material_calibration(
-    samples: Iterable[AMCalibrationSample], *, calibration_id: str
+    samples: Iterable[AMCalibrationSample], *, calibration_id: str,
+    acquisition_fingerprint: str,
 ) -> AMCalibrationModel:
     sample_list = tuple(samples)
     if len(sample_list) < 3:
@@ -199,6 +280,7 @@ def fit_material_calibration(
     model = AMCalibrationModel(
         calibration_id=str(calibration_id),
         training_materials=tuple(sample.material_name for sample in sample_list),
+        acquisition_fingerprint=acquisition_fingerprint,
         zeff_log_slope=float(z_slope),
         zeff_log_intercept=float(z_intercept),
         rhoe_slope=float(r_slope),
@@ -297,9 +379,13 @@ def fit_calibration_from_result(
     *,
     calibration_id: str,
 ) -> AMCalibrationModel:
+    if result.acquisition_config is None:
+        raise ValueError("calibration fitting requires acquisition metadata")
     names = tuple(name.upper() for name in training_materials)
     model = fit_material_calibration(
-        samples_from_result(result, labels, names), calibration_id=calibration_id
+        samples_from_result(result, labels, names),
+        calibration_id=calibration_id,
+        acquisition_fingerprint=result.acquisition_config.calibration_fingerprint,
     )
     mask = np.zeros(np.asarray(labels).shape, dtype=bool)
     for name in names:
@@ -346,3 +432,34 @@ def material_validation_mask(
     for name in material_names:
         mask |= _material_interior_mask(labels, name.upper())
     return mask
+
+
+def save_calibration_model(
+    model: AMCalibrationModel,
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write a calibration bundle without overwriting by default."""
+    destination = Path(path)
+    if destination.suffix.lower() != ".json":
+        raise ValueError("AM calibration bundle path must end in .json")
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"calibration bundle already exists: {destination}")
+    try:
+        destination.write_text(model.to_json() + "\n", encoding="utf-8")
+    except OSError as error:
+        raise OSError(f"could not save AM calibration bundle: {error}") from error
+    return destination
+
+
+def load_calibration_model(path: str | Path) -> AMCalibrationModel:
+    """Load and fully validate a versioned calibration bundle."""
+    source = Path(path)
+    if source.suffix.lower() != ".json":
+        raise ValueError("AM calibration bundle path must end in .json")
+    try:
+        payload = source.read_text(encoding="utf-8")
+    except OSError as error:
+        raise OSError(f"could not load AM calibration bundle: {error}") from error
+    return AMCalibrationModel.from_json(payload)

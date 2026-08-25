@@ -16,11 +16,14 @@ from xrayrecon.alvarez_macovski import (
 )
 from xrayrecon.am_calibration import (
     AMCalibrationSample,
+    AMCalibrationModel,
     evaluate_calibrated_result,
     fit_calibration_from_result,
     fit_material_calibration,
+    load_calibration_model,
     make_am_calibration_phantom,
     material_validation_mask,
+    save_calibration_model,
 )
 from xrayrecon.materials import MATERIAL_NAMES, material_labels_to_zeff_rhoe
 
@@ -276,7 +279,12 @@ def test_material_calibration_corrects_known_systematic_response():
         )
     )
 
-    model = fit_material_calibration(samples, calibration_id="unit-cal")
+    config = AMAcquisitionConfig.industrial_default(num_angles=32)
+    model = fit_material_calibration(
+        samples,
+        calibration_id="unit-cal",
+        acquisition_fingerprint=config.calibration_fingerprint,
+    )
 
     recovered_z = np.asarray([sample.recovered_zeff for sample in samples])
     recovered_r = np.asarray([sample.recovered_rhoe for sample in samples])
@@ -290,6 +298,37 @@ def test_material_calibration_corrects_known_systematic_response():
         [sample.true_rhoe for sample in samples],
         rtol=1e-5,
     )
+
+
+@pytest.mark.unit
+def test_calibration_bundle_round_trips_and_prevents_accidental_overwrite(tmp_path):
+    config = AMAcquisitionConfig.industrial_default(num_angles=32)
+    model = AMCalibrationModel(
+        calibration_id="scanner-reference-v3",
+        training_materials=("FR4", "ALUMINUM", "COPPER"),
+        acquisition_fingerprint=config.calibration_fingerprint,
+        zeff_log_slope=0.91,
+        zeff_log_intercept=0.12,
+        rhoe_slope=1.03,
+        rhoe_intercept=-0.02,
+    )
+    path = tmp_path / "scanner-reference-v3.json"
+
+    restored_json = AMCalibrationModel.from_json(model.to_json())
+    saved_path = save_calibration_model(model, path)
+    restored_file = load_calibration_model(saved_path)
+
+    assert restored_json == model
+    assert restored_file == model
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 1
+    with pytest.raises(FileExistsError, match="already exists"):
+        save_calibration_model(model, path)
+    with pytest.raises(ValueError, match="schema_version"):
+        AMCalibrationModel.from_dict({**model.to_dict(), "schema_version": 2})
+    with pytest.raises(ValueError, match="artifact kind"):
+        AMCalibrationModel.from_dict(
+            {**model.to_dict(), "artifact_kind": "different.artifact"}
+        )
 
 
 @pytest.mark.unit
