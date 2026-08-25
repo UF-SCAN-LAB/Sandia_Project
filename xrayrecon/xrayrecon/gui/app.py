@@ -183,8 +183,8 @@ class MainWin(QtWidgets.QMainWindow):
             self.transferGerberLabels, name="Transfer Gerber Labels to Real CT"
         )
         self.toolsEditor.registerFunction(
-            self._loadSyntheticRegistrationDemo,
-            name="Debug: Load Synthetic Registration Demo",
+            self.loadPcbRegistrationShowcase,
+            name="Load PCB Registration Showcase",
         )
         self.toolsEditor.registerFunction(
             self.loadSophisticatedPcbDemo, name="Load Sophisticated PCB Demo",
@@ -1206,7 +1206,7 @@ class MainWin(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(
                 self, "No Material Labels",
                 "Re-voxelize the Gerber stackup with material-ID labels first "
-                "(e.g. via the synthetic registration demo, or a future "
+                "(e.g. via the PCB registration showcase, or a future "
                 "'voxelize with labels' action).",
             )
             return
@@ -1247,45 +1247,68 @@ class MainWin(QtWidgets.QMainWindow):
         self.materialLegendWidget.setVisible(True)
         self.amLegendBtn.setChecked(True)
 
-    def _loadSyntheticRegistrationDemo(self):
-        """Dev/debug helper: load a known-ground-truth misaligned Gerber/CT
-        pair (built from the already-verified simulated-CT bridge) so the
-        Registration tool can be exercised and checked against a known
-        answer, since no real CT scan with a matching Gerber design exists
-        yet to validate against."""
-        from ..synthetic_registration import (
-            default_synthetic_registration_specs,
-            make_synthetic_registration_case,
-        )
+    def loadPcbRegistrationShowcase(self):
+        """Load a recognizable, known-ground-truth PCB registration scene.
 
-        spec = next(
-            spec
-            for spec in default_synthetic_registration_specs()
-            if spec.name == "combined"
-        )
-        pair = make_synthetic_registration_case(spec)
+        The left pane is a blurred/noisy CT-like acquisition. The right pane
+        is the clean, material-colored Gerber ground truth. Both are generated
+        from the same production fixture used by regression tests.
+        """
+        from ..synthetic_registration import make_pcb_registration_showcase
+
+        pair = make_pcb_registration_showcase()
 
         self._current_rgba_base_left = None
         self.model.setCube(pair.fixed_hwz)
+        self.model.setupTblRows(
+            pair.layer_names,
+            [np.asarray(slices, dtype=int) for slices in pair.layer_slices],
+        )
         self.model.setSpacing(*pair.fixed_spacing)
         self.viewer_3d_left.setDataCube(pair.fixed_hwz)
-        self.viewer_3d_left.resetCamera()
+        self.viewer_3d_left.setCameraTop()
 
         self._gerber_intensity_hwz = pair.moving_hwz
         self._gerber_voxel_spacing_mm = pair.moving_spacing
         self._gerber_material_id_vol_hwz = pair.moving_labels_hwz
-        self._registration_session.invalidate("Synthetic demo reloaded")
-        self.viewer_3d_right.setDataCube(pair.moving_hwz)
-        self.viewer_3d_right.resetCamera()
+        self._registration_session.invalidate("PCB showcase reloaded")
+        ground_truth_rgba = colorize_material_labels(
+            np.moveaxis(pair.moving_labels_hwz, -1, 0)
+        )
+        self._current_rgba_base_right = ground_truth_rgba
+        self.viewer_3d_right.setRGBADataCube(ground_truth_rgba)
+        self.viewer_3d_right.setCameraTop()
+
+        material_summary = ", ".join(name.title() for name in pair.material_names[1:])
+        self.gerberLegendLabel.setText(
+            f"PCB showcase materials: {material_summary}"
+        )
+        self.materialLegendWidget.setVisible(True)
+        self.amLegendBtn.setChecked(True)
+        self.statusBar().showMessage(
+            "PCB registration showcase loaded: CT left, material Gerber right",
+            8000,
+        )
 
         t = pair.known_transform
         QtWidgets.QMessageBox.information(
-            self, "Synthetic Registration Demo Loaded",
+            self, "PCB Registration Showcase Loaded",
+            "LEFT: blurred/noisy CT-like scan\n"
+            "RIGHT: clean material-colored Gerber model\n\n"
+            "Recognizable landmarks include a QFP controller, a smaller IC, "
+            "connector shell, gold edge fingers, routed traces, vias, "
+            "fiducials, passives, and four mounting holes.\n\n"
             "Known answer (aligns RIGHT onto LEFT):\n"
             f"tx={t.tx:.3f}mm  ty={t.ty:.3f}mm  tz={t.tz:.3f}mm\n"
             f"rot_z={t.rot_z_deg:.2f}deg  scale={t.scale:.3f}\n\n"
-            "Open 'Register Gerber to Real CT...' to use the embedded workspace.",
+            "Both panes start in Top view for readability. Open "
+            "'Register Gerber to Real CT...' to compare the red Gerber and "
+            "green CT overlay, run Suggest, review, and explicitly Accept.",
         )
+
+    def _loadSyntheticRegistrationDemo(self):
+        """Backward-compatible entry point retained for scripts/tests."""
+        self.loadPcbRegistrationShowcase()
 
     def fixRotation(self):
         win = RotateWindow(self.model.dataCube)

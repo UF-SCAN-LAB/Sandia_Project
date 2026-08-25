@@ -41,6 +41,26 @@ def test_registration_workspace_is_embedded_in_main_window(qapp, monkeypatch):
     assert win.registrationPanel.window() is win
     assert win._workspaceStack.currentWidget() is win.registrationPanel
     assert not hasattr(win, "_registrationWindow")
+    assert "Gerber = red" in win.registrationPanel.overlayGuide.text()
+    assert win.registrationPanel.topViewBtn.isEnabled()
+    assert win.registrationPanel.isoViewBtn.isEnabled()
+
+
+@pytest.mark.gui
+@pytest.mark.integration
+def test_showcase_loads_material_view_and_named_layer_bands(qapp, monkeypatch):
+    win, seen = _registration_ready_mainwin(monkeypatch)
+
+    assert win._current_rgba_base_right.shape == win._gerber_intensity_hwz.shape + (4,)
+    assert win._current_rgba_base_right.dtype == np.uint8
+    assert win._gerber_material_id_vol_hwz.shape == (96, 128, 24)
+    assert win.model.layerDf["Layer Name"].tolist() == [
+        "Bottom copper routing",
+        "FR4 core and plated vias",
+        "Top copper and gold finish",
+        "Mounted components",
+    ]
+    assert any(title == "PCB Registration Showcase Loaded" for title, _ in seen)
 
 
 @pytest.mark.gui

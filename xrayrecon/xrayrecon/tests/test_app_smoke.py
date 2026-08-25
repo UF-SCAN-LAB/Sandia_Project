@@ -5,7 +5,7 @@ NEW_PHASE2_ACTIONS = (
     "Set Real CT Voxel Spacing...",
     "Register Gerber to Real CT...",
     "Transfer Gerber Labels to Real CT",
-    "Debug: Load Synthetic Registration Demo",
+    "Load PCB Registration Showcase",
 )
 
 
