@@ -43,12 +43,19 @@ ALUMINUM, ALUMINA, and TUNGSTEN labels from the canonical material table.
    rectangular material volume; no separate phantom is substituted.
 4. Use **AM Color: Z_eff**, **rho_e**, and **Material** to compare the three
    views in the left pane. The right pane retains the canonical Gerber labels.
-5. Inspect the comparison component for ground truth beside recovered output.
+5. The application switches to the embedded quantitative workspace. Choose
+   material-regularized interpretation or raw inversion, move through slices,
+   and compare ground truth, recovery, confidence, and projection residual.
+6. Select **Back to volume workspace** to return without losing the result.
 
 The numerical result preserves raw `zeff_recovered` and `rhoe_recovered`
 arrays. Displayed property maps use separately named material-regularized
 arrays, which suppress high-Z filtered-back-projection streaks in neighboring
-low-Z FR4 while keeping the approximation explicit.
+low-Z FR4 while keeping the approximation explicit. `rho_e` is relative to
+liquid water; matching arrays in `10^23 electrons/cm3` are also returned.
+Confidence is a deterministic quality indicator based on AM projection
+consistency, basis signal, edge sensitivity, and disagreement with the
+material interpretation. It is not a probability or uncertainty interval.
 
 The ground-truth transform that aligns the right model onto the left scan is
 `tx=0.55 mm`, `ty=-0.45 mm`, `tz=0.12 mm`, `rotation=4 degrees`, and

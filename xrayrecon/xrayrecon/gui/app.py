@@ -24,7 +24,7 @@ from xrayrecon.cubecorrections.rotation import RotateWindow
 from .helpers import FRPgParamDelegate, phantomSpheres
 from .layermodel import LayerModel
 from .layerview import LayerView
-from .am_plot_window import AMPlotWindow, MaterialLegendWidget
+from .am_plot_window import AMAnalysisPanel, MaterialLegendWidget
 from .stackup_editor import StackupEditorWindow
 from .spacing_dialog import SpacingDialog
 from .registration import RegistrationPanel
@@ -335,6 +335,7 @@ class MainWin(QtWidgets.QMainWindow):
         self.layerFilterEdit.textChanged.connect(self.proxyModel.setFilterFixedString)
 
         leftPanel = QtWidgets.QWidget()
+        self.layerPanel = leftPanel
         ll = QtWidgets.QVBoxLayout(leftPanel)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.addWidget(tblBtnRow)
@@ -405,10 +406,13 @@ class MainWin(QtWidgets.QMainWindow):
         self.registrationPanel = RegistrationPanel(self._registration_session, parent=self)
         self.registrationPanel.sigTransformAccepted.connect(self._onRegistrationAccepted)
         self.registrationPanel.sigCloseRequested.connect(self._showMainWorkspace)
+        self.amAnalysisPanel = AMAnalysisPanel(parent=self)
+        self.amAnalysisPanel.sigCloseRequested.connect(self._showMainWorkspace)
         self._workspaceStack = QtWidgets.QStackedWidget()
         self._workspaceStack.setObjectName("MainWorkspaceStack")
         self._workspaceStack.addWidget(self._mainWorkspacePage)
         self._workspaceStack.addWidget(self.registrationPanel)
+        self._workspaceStack.addWidget(self.amAnalysisPanel)
         self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
 
         # --- Right panel: axis buttons + brightness/contrast + 2D plot ---
@@ -891,13 +895,13 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _showAlvarezMacovskiPlot(self, config: StackupConfig, stackup_path: Path):
         """Run the Alvarez-Macovski dual-energy decomposition on *config* and
-        show a ground-truth-vs-recovered Z_eff/electron-density comparison."""
+        open the embedded quantitative comparison workspace."""
         result = self._runAMDecomposition(config, stackup_path)
         if result is None:
             return
         self._am_result = result
-        self._amPlotWindow = AMPlotWindow(result, parent=self)
-        self._amPlotWindow.show()
+        self.amAnalysisPanel.setResult(result)
+        self._showAMAnalysis()
 
     def _showAMVolumeIn3D(self, config: StackupConfig, stackup_path: Path):
         """Run the Alvarez-Macovski decomposition across every slice of the
@@ -1199,8 +1203,17 @@ class MainWin(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Registration workspace active", 3000)
 
     def _showMainWorkspace(self):
+        self.layerPanel.setVisible(True)
+        self._plotDock.setVisible(True)
         self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
         self.statusBar().showMessage("Main workspace active", 3000)
+
+    def _showAMAnalysis(self):
+        """Give the embedded quantitative plots the available main canvas."""
+        self.layerPanel.setVisible(False)
+        self._plotDock.setVisible(False)
+        self._workspaceStack.setCurrentWidget(self.amAnalysisPanel)
+        self.statusBar().showMessage("Quantitative AM workspace active", 3000)
 
     def _onRegistrationAccepted(self, transform: RigidScaleTransform):
         QtWidgets.QMessageBox.information(
@@ -1358,8 +1371,8 @@ class MainWin(QtWidgets.QMainWindow):
             self.viewer_3d_left.setCameraTop()
             self.materialLegendWidget.setVisible(True)
             self.amLegendBtn.setChecked(True)
-            self._amPlotWindow = AMPlotWindow(self._am_result, parent=self)
-            self._amPlotWindow.show()
+            self.amAnalysisPanel.setResult(self._am_result)
+            self._showAMAnalysis()
             self.statusBar().showMessage(
                 "Showcase AM decomposition ready: choose Z_eff, rho_e, or Material",
                 10000,
@@ -1369,9 +1382,10 @@ class MainWin(QtWidgets.QMainWindow):
                 "Showcase AM Decomposition Complete",
                 "Recovered Z-effective and electron-density volumes are ready.\n\n"
                 "The main-window AM Color buttons switch among Z_eff, rho_e, "
-                "and approximate material views. The comparison window shows "
-                "ground truth beside material-regularized recovery; raw "
-                "decomposition arrays remain preserved for quantitative audit.",
+                "and approximate material views. The embedded analysis workspace "
+                "shows ground truth, raw or material-regularized recovery, "
+                "projection residual, and confidence. Electron density is "
+                "reported relative to water; raw arrays remain preserved for audit.",
             )
         except Exception as error:
             import traceback

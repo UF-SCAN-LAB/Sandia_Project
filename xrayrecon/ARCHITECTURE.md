@@ -81,8 +81,8 @@ The central hub of the application. It:
 - Registers tools (ParameterEditor) for actions like loading files (NPY, Gerber), creating S3A projects, and fixing rotation.
 - Connects signals from the selection table to update the 3D view.
 - Owns a central stacked workspace: the normal dual-pane CT/Gerber view and the
-  embedded `RegistrationPanel`. Registration activation switches pages without
-  creating another top-level window.
+  embedded `RegistrationPanel` and `AMAnalysisPanel`. Registration or AM
+  analysis switches pages without creating another top-level window.
 
 ### Registration
 
@@ -100,9 +100,14 @@ The central hub of the application. It:
   `tests`.
 - `materials.material_labels_to_zeff_rhoe` converts those shared canonical
   labels into the `(Z, H, W, 2)` physical-property input consumed by
-  `alvarez_macovski.simulate_am_volume`. AM results retain raw reconstruction
-  and separately named material-regularized volumes/labels for interpretable
-  display without obscuring quantitative output.
+  `alvarez_macovski.simulate_am_volume`. The second channel is explicitly
+  relative electron density to water; `MaterialProperties` stores mass density
+  separately and provides conversion to `10^23 electrons/cm3`.
+- AM results retain raw reconstruction and separately named
+  material-regularized volumes/labels, projection-consistency residual, and a
+  bounded confidence indicator. `gui.am_plot_window.AMAnalysisPanel` presents
+  these results in the main workspace. Confidence is a quality indicator, not
+  a probability, and never hides the raw inversion.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

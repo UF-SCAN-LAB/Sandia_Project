@@ -47,8 +47,10 @@ After loading the showcase, **Run Showcase Z-effective / Electron Density**
 runs the Alvarez-Macovski component on the same canonical material ground
 truth. The AM Color controls then switch the left pane among recovered
 Z-effective, electron-density, and approximate-material views while the
-comparison component shows ground truth beside material-regularized recovery.
-Raw recovered property arrays remain available for quantitative audit.
+embedded quantitative workspace shows ground truth, raw or
+material-regularized recovery, projection residual, and reconstruction
+confidence. Electron density is labeled relative to water and is also retained
+in `10^23 electrons/cm3`; raw recovered arrays remain available for audit.
 
 ## Running Tests
 ```bash
@@ -80,8 +82,9 @@ regression loop.
   before tackling real, misaligned CT data.
 - **Alvarez-Macovski dual-energy decomposition** (`alvarez_macovski.py`,
   `gui/am_plot_window.py`): recovers Z_eff / electron-density per voxel from
-  a simulated dual-energy scan, with volume colorization and material
-  classification against the materials database.
+  a deterministic noiseless or seeded Poisson dual-energy scan, with explicit
+  relative/absolute electron-density units, projection residual, confidence,
+  volume colorization, and material classification against the materials database.
 
 ## Package Structure
 ```
@@ -117,7 +120,7 @@ xrayrecon/
     ├── stackup_editor.py     # Non-modal Gerber layer/material assignment table
     ├── spacing_dialog.py     # Dialog for entering real-CT voxel spacing (mm/voxel)
     ├── registration.py       # Embedded RegistrationPanel workspace
-    ├── am_plot_window.py     # Alvarez-Macovski ground-truth-vs-recovered comparison plot
+    ├── am_plot_window.py     # Embedded quantitative Alvarez-Macovski workspace
     └── helpers.py            # Shared GUI utilities and phantom data generation
 ```
 

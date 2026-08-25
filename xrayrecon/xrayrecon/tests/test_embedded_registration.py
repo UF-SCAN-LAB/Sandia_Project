@@ -3,6 +3,7 @@ import pytest
 
 import xrayrecon.gui.app as app_module
 from xrayrecon.gui.app import MainWin
+from xrayrecon.gui.am_plot_window import AMAnalysisPanel
 from xrayrecon.gui.registration import RegistrationPanel
 from xrayrecon.gui.helpers import phantomSpheres
 
@@ -86,25 +87,27 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
             "zeff_regularized": zeff,
             "rhoe_regularized": rhoe,
             "material_labels_recovered": labels,
+            "projection_residual": np.zeros(expected_shape, dtype=np.float32),
+            "confidence": np.ones(expected_shape, dtype=np.float32),
+            "rhoe_e23_cm3_ground_truth": rhoe * 3.343,
+            "rhoe_e23_cm3_recovered": rhoe * 3.343,
+            "rhoe_e23_cm3_regularized": rhoe * 3.343,
         }
 
-    class FakePlotWindow:
-        def __init__(self, result, parent=None):
-            self.result = result
-            self.parent = parent
-            self.was_shown = False
-
-        def show(self):
-            self.was_shown = True
-
     monkeypatch.setattr(app_module, "simulate_am_volume", fake_decomposition)
-    monkeypatch.setattr(app_module, "AMPlotWindow", FakePlotWindow)
 
     win.runPcbShowcaseAM()
 
     assert called == {"shape": (24, 96, 128, 2), "angles": 64}
     assert win._am_result["zeff_regularized"].shape == expected_shape
-    assert win._amPlotWindow.was_shown
+    assert isinstance(win.amAnalysisPanel, AMAnalysisPanel)
+    assert not win.amAnalysisPanel.isWindow()
+    assert win.amAnalysisPanel.window() is win
+    assert win._workspaceStack.currentWidget() is win.amAnalysisPanel
+    assert win.amAnalysisPanel.result is win._am_result
+    assert not hasattr(win, "_amPlotWindow")
+    assert win.layerPanel.isHidden()
+    assert win._plotDock.isHidden()
     assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
     assert any(title == "Showcase AM Decomposition Complete" for title, _ in seen)
 
@@ -112,6 +115,11 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
     assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
     win.amColorMaterialBtn.click()
     assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
+
+    win.amAnalysisPanel.backBtn.click()
+    assert win._workspaceStack.currentWidget() is win._mainWorkspacePage
+    assert not win.layerPanel.isHidden()
+    assert not win._plotDock.isHidden()
 
 
 @pytest.mark.gui

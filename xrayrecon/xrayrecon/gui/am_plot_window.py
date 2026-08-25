@@ -3,13 +3,189 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from pyqtgraph.Qt import QtWidgets
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 from ..materials import MATERIALS_DB, MATERIAL_COLORS
 
 
+class AMAnalysisPanel(QtWidgets.QWidget):
+    """Embedded quantitative Alvarez-Macovski review workspace.
+
+    The panel deliberately keeps direct inversion and material-regularized
+    interpretation selectable, shows data-consistency/confidence maps beside
+    them, and labels electron-density units explicitly. Synthetic ground truth
+    is shown when available; production scans may omit those arrays.
+    """
+
+    sigCloseRequested = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.result: dict | None = None
+
+        self.backBtn = QtWidgets.QPushButton("Back to volume workspace")
+        self.backBtn.clicked.connect(self.sigCloseRequested)
+        self.modeCombo = QtWidgets.QComboBox()
+        self.modeCombo.addItem("Material-regularized interpretation", "regularized")
+        self.modeCombo.addItem("Raw inversion (audit)", "raw")
+        self.modeCombo.currentIndexChanged.connect(self._draw)
+
+        self.sliceSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.sliceSlider.setRange(0, 0)
+        self.sliceSlider.valueChanged.connect(self._draw)
+        self.sliceLabel = QtWidgets.QLabel("Slice 0")
+        self.metricSummary = QtWidgets.QLabel("Run a decomposition to inspect it here.")
+        self.metricSummary.setWordWrap(True)
+        self.metricSummary.setStyleSheet("color: #555;")
+
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(self.backBtn)
+        controls.addSpacing(12)
+        controls.addWidget(QtWidgets.QLabel("Display:"))
+        controls.addWidget(self.modeCombo)
+        controls.addSpacing(12)
+        controls.addWidget(self.sliceLabel)
+        controls.addWidget(self.sliceSlider, 1)
+
+        self.figure = Figure(figsize=(10, 7))
+        self.canvas = FigureCanvasQTAgg(self.figure)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        title = QtWidgets.QLabel("Quantitative Alvarez–Macovski Analysis")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        layout.addLayout(controls)
+        layout.addWidget(self.metricSummary)
+        layout.addWidget(self.canvas, 1)
+
+    def setResult(self, result: dict) -> None:
+        required = {
+            "zeff_recovered",
+            "rhoe_recovered",
+            "projection_residual",
+            "confidence",
+        }
+        missing = sorted(required - set(result))
+        if missing:
+            raise ValueError(
+                "AM result is missing quantitative arrays: " + ", ".join(missing)
+            )
+        shape = np.asarray(result["zeff_recovered"]).shape
+        if len(shape) != 3 or any(np.asarray(result[key]).shape != shape for key in required):
+            raise ValueError("AM quantitative arrays must share a (Z, H, W) shape")
+
+        self.result = result
+        representative = AMPlotWindow._pick_representative_slice(
+            result.get("zeff_ground_truth", result["zeff_recovered"])
+        )
+        self.sliceSlider.blockSignals(True)
+        self.sliceSlider.setRange(0, shape[0] - 1)
+        self.sliceSlider.setValue(representative)
+        self.sliceSlider.blockSignals(False)
+        self._draw()
+
+    def _draw(self, *_args) -> None:
+        if self.result is None:
+            return
+        result = self.result
+        index = self.sliceSlider.value()
+        self.sliceLabel.setText(f"Slice {index + 1} of {self.sliceSlider.maximum() + 1}")
+        regularized = self.modeCombo.currentData() == "regularized"
+        z_key = "zeff_regularized" if regularized and "zeff_regularized" in result else "zeff_recovered"
+        r_key = "rhoe_regularized" if regularized and "rhoe_regularized" in result else "rhoe_recovered"
+        mode_name = "Material-regularized" if regularized else "Raw inversion"
+
+        zeff = result[z_key][index]
+        rhoe = result[r_key][index]
+        zeff_gt = result.get("zeff_ground_truth")
+        rhoe_gt = result.get("rhoe_ground_truth")
+        confidence = result["confidence"][index]
+        residual = result["projection_residual"][index]
+
+        self.figure.clear()
+        axes = self.figure.subplots(2, 3)
+        zmax = max(
+            float(np.max(zeff)),
+            float(np.max(zeff_gt[index])) if zeff_gt is not None else 0.0,
+            1e-6,
+        )
+        rmax = max(
+            float(np.max(rhoe)),
+            float(np.max(rhoe_gt[index])) if rhoe_gt is not None else 0.0,
+            1e-6,
+        )
+        panels = [
+            (
+                axes[0, 0],
+                zeff_gt[index] if zeff_gt is not None else zeff,
+                "Ground-truth Z-effective" if zeff_gt is not None else "Z-effective reference unavailable",
+                "plasma",
+                0.0,
+                zmax,
+                "Z-effective",
+            ),
+            (axes[0, 1], zeff, f"{mode_name} Z-effective", "plasma", 0.0, zmax, "Z-effective"),
+            (axes[0, 2], confidence, "Reconstruction confidence", "viridis", 0.0, 1.0, "0–1 quality indicator"),
+            (
+                axes[1, 0],
+                rhoe_gt[index] if rhoe_gt is not None else rhoe,
+                "Ground-truth relative electron density" if rhoe_gt is not None else "Electron-density reference unavailable",
+                "cividis",
+                0.0,
+                rmax,
+                "rho_e / rho_e,water",
+            ),
+            (axes[1, 1], rhoe, f"{mode_name} electron density", "cividis", 0.0, rmax, "rho_e / rho_e,water"),
+            (axes[1, 2], residual, "Projection residual", "magma", 0.0, 1.0, "normalized mismatch"),
+        ]
+        for axis, image, title, cmap, vmin, vmax, label in panels:
+            artist = axis.imshow(image, cmap=cmap, origin="lower", vmin=vmin, vmax=vmax)
+            axis.set_title(title, fontsize=9)
+            axis.set_xticks([])
+            axis.set_yticks([])
+            self.figure.colorbar(artist, ax=axis, label=label, fraction=0.046, pad=0.04)
+
+        self.figure.suptitle(
+            "Raw results remain available for audit; confidence is not a probability.",
+            fontsize=10,
+        )
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+        self._update_metrics(index, z_key, r_key)
+
+    def _update_metrics(self, index: int, z_key: str, r_key: str) -> None:
+        result = self.result
+        zeff_gt = result.get("zeff_ground_truth")
+        rhoe_gt = result.get("rhoe_ground_truth")
+        confidence = result["confidence"][index]
+        residual = result["projection_residual"][index]
+        summary = (
+            f"Median confidence {np.median(confidence):.2f} · "
+            f"median normalized projection residual {np.median(residual):.3f}. "
+        )
+        if zeff_gt is not None and rhoe_gt is not None:
+            mask = rhoe_gt[index] > 0.01
+            if np.any(mask):
+                z_error = np.median(
+                    np.abs(result[z_key][index][mask] - zeff_gt[index][mask])
+                    / np.maximum(zeff_gt[index][mask], 1e-6)
+                )
+                r_error = np.median(
+                    np.abs(result[r_key][index][mask] - rhoe_gt[index][mask])
+                    / np.maximum(rhoe_gt[index][mask], 1e-6)
+                )
+                summary += (
+                    f"Synthetic-truth median errors: Z-effective {z_error:.1%}; "
+                    f"relative electron density {r_error:.1%}."
+                )
+        self.metricSummary.setText(summary)
+
+
 class AMPlotWindow(QtWidgets.QDialog):
-    """Non-modal window showing ground-truth vs. Alvarez-Macovski-recovered
+    """Legacy non-modal comparison retained for API compatibility.
+
+    ``MainWin`` uses :class:`AMAnalysisPanel` so the supported application
+    workflow stays embedded. This dialog still shows Alvarez-Macovski-recovered
     Z_eff / electron-density maps for a representative slice.
 
     The visual comparison uses explicitly named material-regularized outputs
@@ -115,7 +291,20 @@ class MaterialLegendWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QtWidgets.QHBoxLayout(self)
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll.setFixedHeight(48)
+        content = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(content)
         layout.setContentsMargins(6, 2, 6, 2)
 
         title = QtWidgets.QLabel("Material Legend:")
@@ -135,7 +324,10 @@ class MaterialLegendWidget(QtWidgets.QWidget):
             swatch.setStyleSheet(f"background-color: rgb({r},{g},{b}); border: 1px solid #444;")
             layout.addWidget(swatch)
 
-            text = QtWidgets.QLabel(f"{props.name} (Z={props.z_eff:.1f}, ρ={props.electron_density:.2f})")
+            text = QtWidgets.QLabel(
+                f"{props.name} (Z={props.z_eff:.1f}, "
+                f"rho_e/water={props.relative_electron_density:.2f})"
+            )
             layout.addWidget(text)
 
         layout.addStretch()
@@ -145,3 +337,5 @@ class MaterialLegendWidget(QtWidgets.QWidget):
         )
         note.setStyleSheet("color: #888; font-style: italic;")
         layout.addWidget(note)
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
