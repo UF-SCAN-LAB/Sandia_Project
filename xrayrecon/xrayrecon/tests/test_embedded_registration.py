@@ -116,6 +116,7 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
             )
             result.calibration_model = self
             result.calibration_id = self.calibration_id
+            result.calibration_compatibility = "verified"
             return result
 
     monkeypatch.setattr(app_module, "simulate_am_volume", fake_decomposition)
@@ -133,6 +134,7 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
     assert win._workspaceStack.currentWidget() is win.amAnalysisPanel
     assert win.amAnalysisPanel.result is win._am_result
     assert "synthetic reference calibration" in win.amAnalysisPanel.calibrationStatus.text()
+    assert "acquisition physics verified" in win.amAnalysisPanel.calibrationStatus.text()
     assert win.amAnalysisPanel.modeCombo.currentData() == "calibrated"
     assert not hasattr(win, "_amPlotWindow")
     assert win.layerPanel.isHidden()

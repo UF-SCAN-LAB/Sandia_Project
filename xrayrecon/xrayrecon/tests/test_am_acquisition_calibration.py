@@ -332,6 +332,51 @@ def test_calibration_bundle_round_trips_and_prevents_accidental_overwrite(tmp_pa
 
 
 @pytest.mark.unit
+def test_calibration_application_fails_closed_for_incompatible_acquisition():
+    volume = _small_am_volume()
+    reference = AMAcquisitionConfig.industrial_default(num_angles=32)
+    model = AMCalibrationModel(
+        calibration_id="bound-reference-v1",
+        training_materials=("FR4", "ALUMINUM", "COPPER"),
+        acquisition_fingerprint=reference.calibration_fingerprint,
+        zeff_log_slope=1.0,
+        zeff_log_intercept=0.0,
+        rhoe_slope=1.0,
+        rhoe_intercept=0.0,
+    )
+    compatible_config = AMAcquisitionConfig.from_dict(
+        {
+            **reference.to_dict(),
+            "num_angles": 24,
+            "calibration_id": model.calibration_id,
+        }
+    )
+    incompatible_config = AMAcquisitionConfig.from_dict(
+        {
+            **compatible_config.to_dict(),
+            "pixel_size_cm": compatible_config.pixel_size_cm * 2,
+        }
+    )
+    wrong_id_config = AMAcquisitionConfig.from_dict(
+        {**compatible_config.to_dict(), "calibration_id": "different-reference"}
+    )
+    compatible = simulate_am_volume(volume, config=compatible_config)
+    incompatible = simulate_am_volume(volume, config=incompatible_config)
+    wrong_id = simulate_am_volume(volume, config=wrong_id_config)
+
+    calibrated = model.apply(compatible)
+
+    assert calibrated.calibration_compatibility == "verified"
+    assert calibrated.calibration_fingerprint == model.acquisition_fingerprint
+    with pytest.raises(ValueError, match="incompatible.*acquisition physics"):
+        model.apply(incompatible)
+    with pytest.raises(ValueError, match="calibration_id does not match"):
+        model.apply(wrong_id)
+    assert "zeff_calibrated" not in incompatible
+    assert "rhoe_calibrated" not in wrong_id
+
+
+@pytest.mark.unit
 def test_calibration_phantom_is_cross_validated_on_held_out_materials():
     all_materials = (
         "FR4",

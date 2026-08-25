@@ -113,6 +113,14 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             self.modeCombo.setCurrentIndex(1)
             self.qualityCombo.setCurrentIndex(2)
         else:
+            compatibility = getattr(
+                result, "calibration_compatibility", "not recorded"
+            )
+            compatibility_note = (
+                "acquisition physics verified"
+                if compatibility == "verified"
+                else "acquisition compatibility not recorded"
+            )
             source_note = (
                 "synthetic reference calibration; measured scanner data not supplied"
                 if getattr(calibration, "calibration_source", "synthetic_reference")
@@ -121,9 +129,14 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             )
             self.calibrationStatus.setText(
                 f"Calibration: {calibration.calibration_id} · nominal "
-                f"{calibration.nominal_coverage:.0%} intervals · {source_note}."
+                f"{calibration.nominal_coverage:.0%} intervals · "
+                f"{compatibility_note} · {source_note}."
             )
-            self.calibrationStatus.setStyleSheet("color: #176b2c;")
+            self.calibrationStatus.setStyleSheet(
+                "color: #176b2c;"
+                if compatibility == "verified"
+                else "color: #9a6700;"
+            )
             self.modeCombo.setCurrentIndex(0)
             self.qualityCombo.setCurrentIndex(0)
         representative = AMPlotWindow._pick_representative_slice(

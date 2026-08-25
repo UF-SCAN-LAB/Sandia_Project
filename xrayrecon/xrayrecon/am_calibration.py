@@ -149,6 +149,20 @@ class AMCalibrationModel:
         ).astype(np.float32)
 
     def apply(self, result: AMResult) -> AMResult:
+        config = getattr(result, "acquisition_config", None)
+        if config is None:
+            raise ValueError("calibration application requires acquisition metadata")
+        actual_fingerprint = config.calibration_fingerprint
+        if actual_fingerprint != self.acquisition_fingerprint:
+            raise ValueError(
+                "calibration is incompatible with the result acquisition physics "
+                f"(expected {self.acquisition_fingerprint}, got {actual_fingerprint})"
+            )
+        if config.calibration_id not in (None, self.calibration_id):
+            raise ValueError(
+                "acquisition calibration_id does not match the calibration model "
+                f"({config.calibration_id!r} != {self.calibration_id!r})"
+            )
         zeff_source = (
             result["zeff_regularized"]
             if self.zeff_input_mode == "material_regularized"
@@ -190,6 +204,8 @@ class AMCalibrationModel:
         calibrated.calibration_model = self
         calibrated.calibration_id = self.calibration_id
         calibrated.nominal_coverage = self.nominal_coverage
+        calibrated.calibration_compatibility = "verified"
+        calibrated.calibration_fingerprint = self.acquisition_fingerprint
         return calibrated
 
 

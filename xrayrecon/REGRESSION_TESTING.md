@@ -82,6 +82,14 @@ The configurable acquisition/calibration layer additionally requires:
 - projection generation and reconstruction can be invoked separately;
 - measured `.npy` import retains measured provenance and never claims synthetic
   ground truth;
+- calibration fingerprints remain stable across JSON round-trips and sampling,
+  noise, label, and provenance changes, but change with response-critical
+  spectra or geometry;
+- calibration bundles round-trip through versioned JSON, reject invalid schemas,
+  and refuse accidental overwrite;
+- calibration application rejects mismatched physics or calibration IDs before
+  adding quantitative arrays, while the embedded workspace reports a verified
+  match for compatible data;
 - calibration is fitted on FR4, alumina, copper, tin, and tungsten while
   aluminum and gold remain held out;
 - held-out relative electron-density median error is <= 10%, aluminum
