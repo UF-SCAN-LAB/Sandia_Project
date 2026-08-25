@@ -67,3 +67,23 @@ def test_registration_window_sliders_sweep_without_raising(qapp):
         win.rotSbox.setValue(rot)
     for scale in (0.2, 1.0, 5.0):
         win.scaleSbox.setValue(scale)
+
+
+def test_suggested_alignment_improves_score_without_accepting(qapp):
+    pair = make_synthetic_pair()
+    win = RegistrationWindow(
+        pair["aligned_ct_hwz"],
+        pair["gerber_spacing"],
+        pair["misaligned_ct_hwz"],
+        pair["fixed_spacing"],
+    )
+    accepted = []
+    win.sigTransformAccepted.connect(accepted.append)
+    initial_score = win._currentQualityScore
+
+    win.suggestBtn.click()
+
+    suggested_score = win._currentQualityScore
+    assert suggested_score > initial_score
+    assert "suggestion" in win.qualityLabel.text()
+    assert accepted == []

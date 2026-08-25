@@ -54,8 +54,8 @@ pytest xrayrecon/tests -v
   and voxelize into a 3D volume.
 - **Registration** (`registration.py`, `gui/registration.py`): a manual
   5-DOF (XYZ translate + Z-rotation + uniform scale) alignment tool with a
-  live red/green overlay preview, for registering the Gerber model to real
-  CT data.
+  live red/green overlay preview and a bounded initial-alignment suggestion,
+  for registering the Gerber model to real CT data.
 - **Label transfer**: once registered, the Gerber model's known per-voxel
   materials are resampled onto the real CT grid to auto-label it.
 - **Simulated X-ray / CT bridge** (`ct_simulation.py`): a true Radon +
@@ -99,7 +99,32 @@ xrayrecon/
     ├── table.py              # Layer selection table
     ├── stackup_editor.py     # Non-modal Gerber layer/material assignment table
     ├── spacing_dialog.py     # Dialog for entering real-CT voxel spacing (mm/voxel)
-    ├── registration.py       # RegistrationWindow — live overlay manual alignment tool
+    ├── registration.py       # RegistrationWindow — suggested/manual alignment tool
     ├── am_plot_window.py     # Alvarez-Macovski ground-truth-vs-recovered comparison plot
     └── helpers.py            # Shared GUI utilities and phantom data generation
 ```
+
+## Confidence-Guided Registration
+
+Open **Register Gerber to Real CT...** after loading both volumes and confirming
+their voxel spacing. The registration window continuously displays an alignment
+score from `0` to `1`. **Suggest Initial Alignment** performs a deterministic,
+bounded search over XYZ translation, in-plane rotation, and uniform scale, then
+places the best result in the existing controls for manual review. It does not
+accept the transform or transfer material labels.
+
+The score correlates robustly normalized intensity and boundary features from
+the fixed CT and resampled Gerber volumes. It is intended only to compare
+candidate transforms for the same volume pair. The displayed low/moderate/high
+confidence is a conservative summary of the score and its improvement over the
+identity transform; it is not a probability, accuracy guarantee, or substitute
+for inspecting the red/green overlay.
+
+The interactive search is intentionally limited to translations within 25% of
+the fixed-volume extent, rotations within 15 degrees, and scales from 0.8 to
+1.2. Registrations outside those ranges, boards with repeated/symmetric
+features, cropped data, weak contrast, or large Gerber/CT material-intensity
+differences may produce a low-confidence or incorrect suggestion. Adjust the
+five controls directly to override it, use **Reset** to return to identity, and
+select **Accept** only after reviewing the overlay. Label transfer remains a
+separate explicit action in the main window.

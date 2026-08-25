@@ -5,15 +5,20 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 from qtextras import EasyWidget
 
-from ..registration import RigidScaleTransform, resample_volume
+from ..registration import (
+    RigidScaleTransform,
+    propose_initial_transform,
+    registration_quality,
+    resample_volume,
+)
 from .view3d import PCBViewer3D
 
 
 class RegistrationWindow(QtWidgets.QMainWindow):
-    """Manual 5-DOF (XYZ translate + Z-rotation + uniform scale) alignment
-    tool: live red/green overlay of the Gerber-derived MOVING volume against
-    the real-CT FIXED volume, updated on every slider change, following the
-    same non-modal live-preview pattern as `cubecorrections.rotation.RotateWindow`.
+    """Reviewable 5-DOF (XYZ translate + Z-rotation + uniform scale) alignment
+    tool: bounded initial suggestion plus a live red/green manual overlay of
+    the Gerber-derived MOVING volume against the real-CT FIXED volume, following
+    the non-modal preview pattern in `cubecorrections.rotation.RotateWindow`.
 
     The live preview resamples/normalizes a downsampled copy of both volumes
     (see `_downsample_for_preview`) and debounces slider input (see
@@ -50,6 +55,7 @@ class RegistrationWindow(QtWidgets.QMainWindow):
             fixed_hwz, self.fixed_spacing
         )
         self._fixed_norm = self._normalize(self._preview_fixed)
+        self._proposalSummary = ""
 
         self._previewTimer = QtCore.QTimer(self)
         self._previewTimer.setSingleShot(True)
@@ -70,6 +76,11 @@ class RegistrationWindow(QtWidgets.QMainWindow):
 
         self.overlayViewer = PCBViewer3D()
 
+        self.qualityLabel = QtWidgets.QLabel(
+            "Alignment score: calculating... (compare transforms; review the overlay)"
+        )
+        self.qualityLabel.setWordWrap(True)
+        self.suggestBtn = QtWidgets.QPushButton("Suggest Initial Alignment")
         self.resetBtn = QtWidgets.QPushButton("Reset")
         self.acceptBtn = QtWidgets.QPushButton("Accept")
 
@@ -83,7 +94,8 @@ class RegistrationWindow(QtWidgets.QMainWindow):
                     [QtWidgets.QLabel("Rot Z (deg)"), self.rotSbox],
                     [QtWidgets.QLabel("Scale"), self.scaleSbox],
                 ],
-                [self.resetBtn, self.acceptBtn],
+                self.qualityLabel,
+                [self.suggestBtn, self.resetBtn, self.acceptBtn],
             ],
             window=self,
         )
@@ -91,6 +103,7 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         for sbox in (self.txSbox, self.tySbox, self.tzSbox, self.rotSbox, self.scaleSbox):
             sbox.sigValueChanging.connect(lambda *_: self._schedulePreviewUpdate())
 
+        self.suggestBtn.clicked.connect(self._suggestInitialAlignment)
         self.resetBtn.clicked.connect(self._resetSliders)
         self.acceptBtn.clicked.connect(self._onAccept)
 
@@ -110,12 +123,52 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         )
 
     def _resetSliders(self):
+        self._proposalSummary = ""
         self.txSbox.setValue(0.0)
         self.tySbox.setValue(0.0)
         self.tzSbox.setValue(0.0)
         self.rotSbox.setValue(0.0)
         self.scaleSbox.setValue(1.0)
         self._updatePreview()
+
+    def _setTransform(self, transform: RigidScaleTransform):
+        """Populate the manual controls without accepting the transform."""
+        self.txSbox.setValue(transform.tx)
+        self.tySbox.setValue(transform.ty)
+        self.tzSbox.setValue(transform.tz)
+        self.rotSbox.setValue(transform.rot_z_deg)
+        self.scaleSbox.setValue(transform.scale)
+
+    def _suggestInitialAlignment(self):
+        """Run the bounded search and leave its result open for review."""
+        self.suggestBtn.setEnabled(False)
+        self.qualityLabel.setText("Searching for an initial alignment...")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+        try:
+            proposal = propose_initial_transform(
+                self._preview_moving,
+                self._preview_moving_spacing,
+                self._preview_fixed,
+                self._preview_fixed_spacing,
+            )
+            self._proposalSummary = (
+                f"suggestion {proposal.confidence} confidence, "
+                f"search gain {proposal.improvement:+.3f}"
+            )
+            self._setTransform(proposal.transform)
+            self._updatePreview()
+        except Exception as error:
+            self._proposalSummary = ""
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Initial Alignment Failed",
+                f"The bounded search could not produce a suggestion:\n{error}",
+            )
+            self._updatePreview()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.suggestBtn.setEnabled(True)
 
     @classmethod
     def _downsample_for_preview(cls, vol: np.ndarray, spacing):
@@ -124,11 +177,13 @@ class RegistrationWindow(QtWidgets.QMainWindow):
         Coarsens the physical spacing to match (fewer, larger voxels), so
         `resample_volume`'s mm-based math stays correct on the downsampled
         copy."""
-        factor = max(1, int(np.ceil(max(vol.shape) / cls._PREVIEW_MAX_DIM)))
-        if factor == 1:
+        factors = tuple(
+            max(1, int(np.ceil(size / cls._PREVIEW_MAX_DIM))) for size in vol.shape
+        )
+        if factors == (1, 1, 1):
             return vol, tuple(spacing)
-        small = vol[::factor, ::factor, ::factor]
-        small_spacing = tuple(s * factor for s in spacing)
+        small = vol[tuple(slice(None, None, factor) for factor in factors)]
+        small_spacing = tuple(s * factor for s, factor in zip(spacing, factors))
         return small, small_spacing
 
     @staticmethod
@@ -159,6 +214,13 @@ class RegistrationWindow(QtWidgets.QMainWindow):
             order=1,
         )
         moving_norm = self._normalize(resampled_moving)
+        score = registration_quality(self._preview_fixed, resampled_moving)
+        self._currentQualityScore = score
+        suffix = f" | {self._proposalSummary}" if self._proposalSummary else ""
+        self.qualityLabel.setText(
+            f"Alignment score: {score:.3f}{suffix}. "
+            "This is a comparison aid, not proof of a correct registration; review the overlay."
+        )
 
         h, w, z = self._preview_fixed.shape
         rgba = np.zeros((h, w, z, 4), dtype=np.uint8)
