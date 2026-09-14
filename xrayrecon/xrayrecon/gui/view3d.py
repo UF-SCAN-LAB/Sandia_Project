@@ -24,7 +24,10 @@ class PCBViewer3D(gl.GLViewWidget):
         self.axisItem = gl.GLAxisItem()
         self.axisItem.setGLOptions("translucent")
         self.addItem(self.axisItem)
-        self.volume = gl.GLVolumeItem(np.zeros((1, 1), dtype="uint8"))
+        # GLVolumeItem requires a 3-D scalar or 4-D RGBA texture. A 2-D
+        # placeholder reaches paintGL before the first real dataset on some
+        # systems and fails while uploading the texture.
+        self.volume = gl.GLVolumeItem(np.zeros((1, 1, 1, 4), dtype="uint8"))
         self.addItem(self.volume)
         self._dataShape = (1, 1, 1)
 

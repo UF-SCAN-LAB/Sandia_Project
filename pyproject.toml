@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sandia-xrayrecon"
+version = "0.1.0"
+description = "PCB X-ray CT reconstruction, Gerber registration, and layer segmentation"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "PyQt5>=5.15",
+    "PyOpenGL",
+    "pyqtgraph>=0.13",
+    "qtextras",
+    "s3a",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-image",
+    "opencv-python",
+    "pandas",
+    "matplotlib",
+    "Pillow",
+    "pygerber",
+    "tifffile",
+    "fire",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4"]
+
+[tool.setuptools]
+package-dir = {"" = "xrayrecon"}
+
+[tool.setuptools.packages.find]
+where = ["xrayrecon"]
+include = ["xrayrecon*"]
+
+[tool.pytest.ini_options]
+testpaths = ["xrayrecon/xrayrecon/tests"]
+addopts = "-ra"
+markers = [
+    "unit: fast tests of pure computation and state",
+    "integration: tests spanning multiple application components",
+    "gui: headless Qt interaction tests",
+    "slow: tests intentionally excluded from the fast development loop",
+]
+filterwarnings = [
+    "error::RuntimeWarning:xrayrecon\\..*",
+    "error::FutureWarning:xrayrecon\\..*",
+]

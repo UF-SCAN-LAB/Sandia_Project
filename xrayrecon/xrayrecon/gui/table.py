@@ -86,10 +86,16 @@ class PandasModel(QtCore.QAbstractTableModel):
     def addDfRows(self, keyValDict: Dict[str, List[Any]]):
         keyValDf = pd.DataFrame(keyValDict)
         defaultRows = self.makeDefaultTblRows(len(keyValDf))
-        keyValDf.index = defaultRows.index
-        defaultRows.update(keyValDf)
+        for column in keyValDf.columns:
+            # Replace whole columns so pandas can select an appropriate dtype
+            # (notably object for per-row slice arrays) instead of coercing
+            # arrays into the integer dtype of the ``-1`` default sentinel.
+            defaultRows[column] = keyValDf[column].tolist()
         self.layoutAboutToBeChanged.emit()
-        self.dataDf = pd.concat([self.dataDf, defaultRows])
+        if self.dataDf.empty:
+            self.dataDf = defaultRows.copy()
+        else:
+            self.dataDf = pd.concat([self.dataDf, defaultRows])
         self.layoutChanged.emit()
 
     def removeLayers(self, layers: Sequence[int] = None):
@@ -104,5 +110,5 @@ class PandasModel(QtCore.QAbstractTableModel):
         outDict = {}
         for k, v in self.defaultValues.items():
             outDict[k] = [v] * numRows
-        outDict[self.indexCol] = np.arange(nextNum, numRows)
+        outDict[self.indexCol] = np.arange(nextNum, nextNum + numRows)
         return pd.DataFrame(outDict).set_index(self.indexCol, drop=False)

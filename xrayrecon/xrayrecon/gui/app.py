@@ -24,17 +24,17 @@ from xrayrecon.cubecorrections.rotation import RotateWindow
 from .helpers import FRPgParamDelegate, phantomSpheres
 from .layermodel import LayerModel
 from .layerview import LayerView
-from .am_plot_window import AMPlotWindow, MaterialLegendWidget
+from .am_plot_window import AMAnalysisPanel, AMPlotWindow, MaterialLegendWidget
 from .stackup_editor import StackupEditorWindow
 from .spacing_dialog import SpacingDialog
-from .registration import RegistrationWindow
+from .registration import RegistrationPanel
 from .view3d import PCBViewer3D
 
 # Gerber Integration Imports
 from ..pygerber_integration import PyGerberRasterizer
 from ..gerber_utils import GerberLayer
 from ..voxelizer import Voxelizer
-from ..materials import MATERIALS_DB, get_material
+from ..materials import MATERIALS_DB, get_material, material_labels_to_zeff_rhoe
 from ..stackup import StackupConfig
 from ..stackup_voxelize import voxelize_stackup_config
 from ..multimaterial import MaterialEntry, MultiMaterialConfig
@@ -47,7 +47,12 @@ from ..alvarez_macovski import (
     colorize_by_material,
     colorize_material_labels,
 )
-from ..registration import RigidScaleTransform, resample_labels
+from ..am_acquisition import AMAcquisitionConfig
+from ..am_calibration import (
+    fit_calibration_from_result,
+    make_am_calibration_phantom,
+)
+from ..registration import RegistrationSession, RigidScaleTransform, resample_labels
 
 pg.setConfigOption("imageAxisOrder", "row-major")
 
@@ -104,21 +109,20 @@ class MainWin(QtWidgets.QMainWindow):
         self._current_rgba_base_right: np.ndarray | None = None
         self._stackupEditor: StackupEditorWindow | None = None
         self._am_result: dict | None = None
-        self._amPlotWindow: AMPlotWindow | None = None
+        self._showcase_am_volume_zhw2: np.ndarray | None = None
+        self._showcase_material_labels_hwz: np.ndarray | None = None
+        self._showcase_am_calibration_model = None
         # mm/voxel (x, y, z) captured at voxelization time -- discarded by
         # Voxelizer itself, so this is the only place it survives for reuse
         # (e.g. by registration).
         self._gerber_voxel_spacing_mm: tuple[float, float, float] | None = None
         self._gerber_material_id_vol_hwz: np.ndarray | None = None
-        self._registration_transform = None
-        self._registration_moving_spacing: tuple[float, float, float] | None = None
-        self._registration_fixed_spacing: tuple[float, float, float] | None = None
-        self._registration_fixed_shape: tuple[int, int, int] | None = None
+        self._registration_session = RegistrationSession()
         # self.model.sigCubeChanged.connect(
         #     lambda: self.viewer_3d_left.setDataCube(self.model.dataCube)
         # )
 
-        pgDict = dict(type="list", values={"True": True, "False": False})
+        pgDict = dict(type="list", limits={"True": True, "False": False})
         self._tblDelegate = FRPgParamDelegate(pgDict)
 
         self.tbl = QtWidgets.QTableView()
@@ -192,6 +196,14 @@ class MainWin(QtWidgets.QMainWindow):
             self.transferGerberLabels, name="Transfer Gerber Labels to Real CT"
         )
         self.toolsEditor.registerFunction(
+            self.loadPcbRegistrationShowcase,
+            name="Load PCB Registration Showcase",
+        )
+        self.toolsEditor.registerFunction(
+            self.runPcbShowcaseAM,
+            name="Run Showcase Z-effective / Electron Density",
+        )
+        self.toolsEditor.registerFunction(
             self._loadSyntheticRegistrationDemo,
             name="Debug: Load Synthetic Registration Demo",
         )
@@ -201,6 +213,9 @@ class MainWin(QtWidgets.QMainWindow):
         self.toolsEditor.registerFunction(
             self.showCachedAlvarezMacovskiPlot,
             name="Regenerate Z_eff / rho_e Plot",
+        )
+        self.toolsEditor.registerFunction(
+            self.loadRealPcbCtDemo, name="Load Real PCB Demo (Gerber + CT)",
         )
         self._buildUi()
 
@@ -339,6 +354,7 @@ class MainWin(QtWidgets.QMainWindow):
         self.layerFilterEdit.textChanged.connect(self.proxyModel.setFilterFixedString)
 
         leftPanel = QtWidgets.QWidget()
+        self.layerPanel = leftPanel
         ll = QtWidgets.QVBoxLayout(leftPanel)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.addWidget(tblBtnRow)
@@ -401,10 +417,22 @@ class MainWin(QtWidgets.QMainWindow):
                 )
             )
 
-        centerPanel = QtWidgets.QWidget()
-        cl = QtWidgets.QVBoxLayout(centerPanel)
+        self._mainWorkspacePage = QtWidgets.QWidget()
+        cl = QtWidgets.QVBoxLayout(self._mainWorkspacePage)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.addWidget(centerSplitter)
+
+        self.registrationPanel = RegistrationPanel(self._registration_session, parent=self)
+        self.registrationPanel.sigTransformAccepted.connect(self._onRegistrationAccepted)
+        self.registrationPanel.sigCloseRequested.connect(self._showMainWorkspace)
+        self.amAnalysisPanel = AMAnalysisPanel(parent=self)
+        self.amAnalysisPanel.sigCloseRequested.connect(self._showMainWorkspace)
+        self._workspaceStack = QtWidgets.QStackedWidget()
+        self._workspaceStack.setObjectName("MainWorkspaceStack")
+        self._workspaceStack.addWidget(self._mainWorkspacePage)
+        self._workspaceStack.addWidget(self.registrationPanel)
+        self._workspaceStack.addWidget(self.amAnalysisPanel)
+        self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
 
         # --- Right panel: axis buttons + brightness/contrast + 2D plot ---
         self.minSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -451,7 +479,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._buildViewMenuActions()
 
         children = EasyWidget(
-            [leftPanel, centerPanel],
+            [leftPanel, self._workspaceStack],
             useSplitter=True,
             layout="H",
         )
@@ -774,10 +802,7 @@ class MainWin(QtWidgets.QMainWindow):
         # Any previously-accepted registration was fit to the OLD Gerber
         # geometry -- invalidate it so a stale transform can't silently be
         # applied to newly-(re)voxelized data via transferGerberLabels.
-        self._registration_transform = None
-        self._registration_moving_spacing = None
-        self._registration_fixed_spacing = None
-        self._registration_fixed_shape = None
+        self._registration_session.invalidate("Gerber geometry changed")
         return vol, layer_names, layer_slices, visual_entries
 
     @bind(file=dict(type="file", nameFilter="Stackup Files (*.json);;All Files (*)", value=""))
@@ -922,12 +947,13 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _showAlvarezMacovskiPlot(self, config: StackupConfig, stackup_path: Path):
         """Run the Alvarez-Macovski dual-energy decomposition on *config* and
-        show a ground-truth-vs-recovered Z_eff/electron-density comparison."""
+        open the embedded quantitative comparison workspace."""
         result = self._runAMDecomposition(config, stackup_path)
         if result is None:
             return
         self._am_result = result
-        self.showCachedAlvarezMacovskiPlot()
+        self.amAnalysisPanel.setResult(result)
+        self._showAMAnalysis()
 
     def showCachedAlvarezMacovskiPlot(self):
         """Recreate the AM comparison dialog from the most recent result."""
@@ -939,8 +965,9 @@ class MainWin(QtWidgets.QMainWindow):
             )
             return
 
-        if self._amPlotWindow is not None:
-            self._amPlotWindow.close()
+        cached_window = getattr(self, "_amPlotWindow", None)
+        if cached_window is not None:
+            cached_window.close()
 
         plotWindow = AMPlotWindow(self._am_result, parent=self)
         self._amPlotWindow = plotWindow
@@ -976,15 +1003,30 @@ class MainWin(QtWidgets.QMainWindow):
         it into the LEFT 3D pane. No-op if no AM decomposition has run yet."""
         if self._am_result is None:
             return
-        zeff_vol = self._am_result["zeff_recovered"]
-        rhoe_vol = self._am_result["rhoe_recovered"]
+        zeff_vol = self._am_result.get(
+            "zeff_calibrated",
+            self._am_result.get(
+                "zeff_regularized", self._am_result["zeff_recovered"]
+            ),
+        )
+        rhoe_vol = self._am_result.get(
+            "rhoe_calibrated",
+            self._am_result.get(
+                "rhoe_regularized", self._am_result["rhoe_recovered"]
+            ),
+        )
 
         if self.amColorZeffBtn.isChecked():
             rgba = colorize_volume(zeff_vol, "plasma")
         elif self.amColorRhoeBtn.isChecked():
             rgba = colorize_volume(rhoe_vol, "cividis")
         else:
-            rgba = colorize_by_material(zeff_vol, rhoe_vol)
+            labels = self._am_result.get("material_labels_recovered")
+            rgba = (
+                colorize_material_labels(labels)
+                if labels is not None
+                else colorize_by_material(zeff_vol, rhoe_vol)
+            )
 
         scalar_hwz = np.moveaxis(rhoe_vol, 0, -1)
 
@@ -1157,6 +1199,58 @@ class MainWin(QtWidgets.QMainWindow):
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load PCB demo:\n{e}")
 
+    def loadRealPcbCtDemo(self):
+        """Load genuinely real data on both sides: a real X-ray CT scan
+        (E:\\Data\\20250701_PCB2, downsampled) into the left pane, and a real
+        Gerber PCB design (E:\\git\\AltiumGerberX2, board 'PCB1') into the
+        right pane.
+
+        NOT a confirmed registered pair: the "PCB1"/"PCB2" naming does not by
+        itself establish these are the same physical board, so this loads
+        them side by side as independent real data rather than claiming an
+        alignment that hasn't been verified.
+        """
+        from ..real_pcb_demo import load_real_pcb_ct
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(
+            "Loading real CT scan (downsampling ~1375 slices, this can take a while)..."
+        )
+        QtWidgets.QApplication.processEvents()
+        try:
+            ct_zhw = load_real_pcb_ct()
+            ct_hwz = np.moveaxis(ct_zhw, 0, -1)
+
+            self._current_rgba_base_left = None
+            self.model.setCube(ct_hwz)
+            self.viewer_3d_left.setDataCube(ct_hwz)
+            self.viewer_3d_left.resetCamera()
+
+            self.statusBar().showMessage("Loading real Gerber PCB stackup...")
+            QtWidgets.QApplication.processEvents()
+            gerber_cfg = (
+                Path(__file__).resolve().parents[2] / "configs" / "altium_gerberx2_stackup.json"
+            )
+            self.loadGerberStackup(gerber_cfg)
+
+            self.statusBar().showMessage("Real PCB demo loaded.", 5000)
+            QtWidgets.QMessageBox.information(
+                self, "Real PCB Demo Loaded",
+                f"Left: real CT scan {ct_hwz.shape} (E:\\Data\\20250701_PCB2, downsampled).\n"
+                "Right: real Gerber PCB (E:\\git\\AltiumGerberX2, board 'PCB1').\n\n"
+                "Note: these are NOT a confirmed registered pair -- shown side "
+                "by side as independent real data, not aligned. Real voxel "
+                "spacing for the CT scan is also unknown -- set it via "
+                "'Set Real CT Voxel Spacing...' before registering.",
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.statusBar().clearMessage()
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load real PCB demo:\n{e}")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
     def setRealCTSpacing(self):
         dlg = SpacingDialog(self.model.spacing_xyz, parent=self)
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
@@ -1189,25 +1283,29 @@ class MainWin(QtWidgets.QMainWindow):
             if proceed != QtWidgets.QMessageBox.Yes:
                 return
 
-        # No `parent=` here, matching RotateWindow's convention elsewhere in
-        # this file: a GLViewWidget-based top-level window parented to a live
-        # MainWin appears to share/break its GL rendering surface, leaving it
-        # blank -- confirmed via manual testing.
-        win = RegistrationWindow(
+        self.registrationPanel.setVolumes(
             self._gerber_intensity_hwz,
             self._gerber_voxel_spacing_mm,
             self.model.dataCube,
             self.model.spacing_xyz,
         )
-        self._registrationWindow = win  # keep a reference so it isn't garbage collected
-        win.sigTransformAccepted.connect(self._onRegistrationAccepted)
-        win.show()
+        self._workspaceStack.setCurrentWidget(self.registrationPanel)
+        self.statusBar().showMessage("Registration workspace active", 3000)
+
+    def _showMainWorkspace(self):
+        self.layerPanel.setVisible(True)
+        self._plotDock.setVisible(True)
+        self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
+        self.statusBar().showMessage("Main workspace active", 3000)
+
+    def _showAMAnalysis(self):
+        """Give the embedded quantitative plots the available main canvas."""
+        self.layerPanel.setVisible(False)
+        self._plotDock.setVisible(False)
+        self._workspaceStack.setCurrentWidget(self.amAnalysisPanel)
+        self.statusBar().showMessage("Quantitative AM workspace active", 3000)
 
     def _onRegistrationAccepted(self, transform: RigidScaleTransform):
-        self._registration_transform = transform
-        self._registration_moving_spacing = self._gerber_voxel_spacing_mm
-        self._registration_fixed_spacing = self.model.spacing_xyz
-        self._registration_fixed_shape = self.model.dataCube.shape
         QtWidgets.QMessageBox.information(
             self, "Registration Accepted",
             f"Transform stored: tx={transform.tx:.3f}mm ty={transform.ty:.3f}mm "
@@ -1216,7 +1314,7 @@ class MainWin(QtWidgets.QMainWindow):
         )
 
     def transferGerberLabels(self):
-        if self._registration_transform is None:
+        if self._registration_session.accepted_transform is None:
             QtWidgets.QMessageBox.information(
                 self, "No Registration",
                 "Use 'Register Gerber to Real CT...' and accept a transform first.",
@@ -1226,7 +1324,7 @@ class MainWin(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(
                 self, "No Material Labels",
                 "Re-voxelize the Gerber stackup with material-ID labels first "
-                "(e.g. via the synthetic registration demo, or a future "
+                "(e.g. via the PCB registration showcase, or a future "
                 "'voxelize with labels' action).",
             )
             return
@@ -1235,9 +1333,11 @@ class MainWin(QtWidgets.QMainWindow):
                 self, "No Real CT Data", "Load real CT data first."
             )
             return
-        if (
-            self.model.dataCube.shape != self._registration_fixed_shape
-            or self.model.spacing_xyz != self._registration_fixed_spacing
+        if not self._registration_session.is_compatible(
+            self._gerber_intensity_hwz,
+            self._gerber_voxel_spacing_mm,
+            self.model.dataCube,
+            self.model.spacing_xyz,
         ):
             QtWidgets.QMessageBox.information(
                 self, "Registration Out Of Date",
@@ -1249,10 +1349,10 @@ class MainWin(QtWidgets.QMainWindow):
 
         labels_hwz = resample_labels(
             self._gerber_material_id_vol_hwz,
-            self._registration_moving_spacing,
+            self._gerber_voxel_spacing_mm,
             self.model.dataCube.shape,
-            self._registration_fixed_spacing,
-            self._registration_transform,
+            self.model.spacing_xyz,
+            self._registration_session.accepted_transform,
         )
         rgba = colorize_material_labels(np.moveaxis(labels_hwz, -1, 0))
 
@@ -1265,36 +1365,178 @@ class MainWin(QtWidgets.QMainWindow):
         self.materialLegendWidget.setVisible(True)
         self.amLegendBtn.setChecked(True)
 
-    def _loadSyntheticRegistrationDemo(self):
-        """Dev/debug helper: load a known-ground-truth misaligned Gerber/CT
-        pair (built from the already-verified simulated-CT bridge) so the
-        Registration tool can be exercised and checked against a known
-        answer, since no real CT scan with a matching Gerber design exists
-        yet to validate against."""
-        from ..tests.fixtures import make_synthetic_pair
+    def loadPcbRegistrationShowcase(self):
+        """Load a recognizable, known-ground-truth PCB registration scene.
 
-        pair = make_synthetic_pair()
+        The left pane is a blurred/noisy CT-like acquisition. The right pane
+        is the clean, material-colored Gerber ground truth. Both are generated
+        from the same production fixture used by regression tests.
+        """
+        from ..synthetic_registration import make_pcb_registration_showcase
+
+        pair = make_pcb_registration_showcase()
 
         self._current_rgba_base_left = None
-        self.model.setCube(pair["misaligned_ct_hwz"])
-        self.model.setSpacing(*pair["fixed_spacing"])
-        self.viewer_3d_left.setDataCube(pair["misaligned_ct_hwz"])
-        self.viewer_3d_left.resetCamera()
+        self.model.setCube(pair.fixed_hwz)
+        self.model.setupTblRows(
+            pair.layer_names,
+            [np.asarray(slices, dtype=int) for slices in pair.layer_slices],
+        )
+        self.model.setSpacing(*pair.fixed_spacing)
+        self.viewer_3d_left.setDataCube(pair.fixed_hwz)
+        self.viewer_3d_left.setCameraTop()
 
-        self._gerber_intensity_hwz = pair["aligned_ct_hwz"]
-        self._gerber_voxel_spacing_mm = pair["gerber_spacing"]
-        self._gerber_material_id_vol_hwz = pair["gerber_material_ids_hwz"]
-        self.viewer_3d_right.setDataCube(pair["aligned_ct_hwz"])
-        self.viewer_3d_right.resetCamera()
+        self._gerber_intensity_hwz = pair.moving_hwz
+        self._gerber_voxel_spacing_mm = pair.moving_spacing
+        self._gerber_material_id_vol_hwz = pair.moving_labels_hwz
+        self._showcase_material_labels_hwz = pair.moving_labels_hwz
+        self._showcase_am_volume_zhw2 = material_labels_to_zeff_rhoe(
+            np.moveaxis(pair.moving_labels_hwz, -1, 0)
+        )
+        self._am_result = None
+        self._registration_session.invalidate("PCB showcase reloaded")
+        ground_truth_rgba = colorize_material_labels(
+            np.moveaxis(pair.moving_labels_hwz, -1, 0)
+        )
+        self._current_rgba_base_right = ground_truth_rgba
+        self.viewer_3d_right.setRGBADataCube(ground_truth_rgba)
+        self.viewer_3d_right.setCameraTop()
 
-        t = pair["known_transform"]
+        material_summary = ", ".join(name.title() for name in pair.material_names[1:])
+        self.gerberLegendLabel.setText(
+            f"PCB showcase materials: {material_summary}"
+        )
+        self.materialLegendWidget.setVisible(True)
+        self.amLegendBtn.setChecked(True)
+        self.statusBar().showMessage(
+            "PCB registration showcase loaded: CT left, material Gerber right",
+            8000,
+        )
+
+        t = pair.known_transform
         QtWidgets.QMessageBox.information(
-            self, "Synthetic Registration Demo Loaded",
+            self, "PCB Registration Showcase Loaded",
+            "LEFT: blurred/noisy CT-like scan\n"
+            "RIGHT: clean material-colored Gerber model\n\n"
+            "Recognizable landmarks include a QFP controller, a smaller IC, "
+            "connector shell, gold edge fingers, routed traces, vias, "
+            "fiducials, passives, and four mounting holes.\n\n"
             "Known answer (aligns RIGHT onto LEFT):\n"
             f"tx={t.tx:.3f}mm  ty={t.ty:.3f}mm  tz={t.tz:.3f}mm\n"
             f"rot_z={t.rot_z_deg:.2f}deg  scale={t.scale:.3f}\n\n"
-            "Open 'Register Gerber to Real CT...' and dial the sliders to match.",
+            "Both panes start in Top view for readability. Open "
+            "'Register Gerber to Real CT...' to compare the red Gerber and "
+            "green CT overlay, run Suggest, review, and explicitly Accept.\n\n"
+            "Choose 'Run Showcase Z-effective / Electron Density' to run the "
+            "Alvarez-Macovski component on the same material ground truth.",
         )
+
+    def runPcbShowcaseAM(self):
+        """Run AM decomposition on the active interpretable PCB showcase."""
+        if (
+            self._showcase_am_volume_zhw2 is None
+            or self._showcase_material_labels_hwz is None
+            or self._gerber_material_id_vol_hwz
+            is not self._showcase_material_labels_hwz
+        ):
+            QtWidgets.QMessageBox.information(
+                self,
+                "PCB Showcase Not Loaded",
+                "Load 'PCB Registration Showcase' before running its "
+                "Z-effective / electron-density decomposition.",
+            )
+            return
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage(
+            "Running showcase Alvarez-Macovski decomposition..."
+        )
+        QtWidgets.QApplication.processEvents()
+        try:
+            calibration = self._buildShowcaseAMCalibration()
+            acquisition = AMAcquisitionConfig.industrial_default(
+                num_angles=64,
+                calibration_id=calibration.calibration_id,
+            )
+            raw_result = simulate_am_volume(
+                self._showcase_am_volume_zhw2,
+                config=acquisition,
+            )
+            self._am_result = calibration.apply(raw_result)
+            self._renderAMVolume()
+            self.viewer_3d_left.setCameraTop()
+            self.materialLegendWidget.setVisible(True)
+            self.amLegendBtn.setChecked(True)
+            self.amAnalysisPanel.setResult(self._am_result)
+            self._showAMAnalysis()
+            self.statusBar().showMessage(
+                "Showcase AM decomposition ready: choose Z_eff, rho_e, or Material",
+                10000,
+            )
+            QtWidgets.QMessageBox.information(
+                self,
+                "Showcase AM Decomposition Complete",
+                "Recovered Z-effective and electron-density volumes are ready.\n\n"
+                "The main-window AM Color buttons switch among Z_eff, rho_e, "
+                "and approximate material views. The embedded analysis workspace "
+                "shows ground truth, raw or material-regularized recovery, "
+                "projection residual, and confidence. Electron density is "
+                "reported relative to water; raw arrays remain preserved for audit.",
+            )
+        except Exception as error:
+            import traceback
+
+            traceback.print_exc()
+            self.statusBar().clearMessage()
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Showcase AM Decomposition Failed",
+                f"The decomposition could not complete:\n{error}",
+            )
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+    def _buildShowcaseAMCalibration(self):
+        """Fit and cache the documented synthetic reference calibration."""
+        if self._showcase_am_calibration_model is not None:
+            return self._showcase_am_calibration_model
+        all_materials = (
+            "FR4",
+            "ALUMINA",
+            "ALUMINUM",
+            "COPPER",
+            "TIN",
+            "TUNGSTEN",
+            "GOLD",
+        )
+        training_materials = (
+            "FR4",
+            "ALUMINA",
+            "COPPER",
+            "TIN",
+            "TUNGSTEN",
+        )
+        labels = make_am_calibration_phantom(all_materials, size=72)
+        volume = material_labels_to_zeff_rhoe(labels)
+        training_result = simulate_am_volume(
+            volume,
+            config=AMAcquisitionConfig.industrial_default(
+                num_angles=96,
+                photon_count=2_000_000,
+                random_seed=71,
+            ),
+        )
+        self._showcase_am_calibration_model = fit_calibration_from_result(
+            training_result,
+            labels,
+            training_materials,
+            calibration_id="synthetic-am-material-v1",
+        )
+        return self._showcase_am_calibration_model
+
+    def _loadSyntheticRegistrationDemo(self):
+        """Backward-compatible entry point retained for scripts/tests."""
+        self.loadPcbRegistrationShowcase()
 
     def fixRotation(self):
         win = RotateWindow(self.model.dataCube)

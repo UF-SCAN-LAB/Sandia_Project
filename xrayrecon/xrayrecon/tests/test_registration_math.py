@@ -3,6 +3,8 @@ import numpy as np
 from xrayrecon.registration import (
     RigidScaleTransform,
     invert_transform,
+    propose_initial_transform,
+    registration_quality,
     resample_labels,
     resample_volume,
     transform_to_matrix,
@@ -158,3 +160,53 @@ def test_invert_transform_is_self_consistent():
     assert np.isclose(t_roundtrip.tz, t.tz)
     assert np.isclose(t_roundtrip.rot_z_deg, t.rot_z_deg)
     assert np.isclose(t_roundtrip.scale, t.scale)
+
+
+def test_registration_quality_rewards_known_alignment():
+    pair = make_synthetic_pair()
+    identity_score = registration_quality(
+        pair["misaligned_ct_hwz"], pair["aligned_ct_hwz"]
+    )
+    known_aligned = resample_volume(
+        pair["aligned_ct_hwz"],
+        pair["gerber_spacing"],
+        pair["misaligned_ct_hwz"].shape,
+        pair["fixed_spacing"],
+        pair["known_transform"],
+    )
+    known_score = registration_quality(pair["misaligned_ct_hwz"], known_aligned)
+
+    assert 0.0 <= identity_score <= 1.0
+    assert 0.0 <= known_score <= 1.0
+    assert known_score > identity_score + 0.05
+
+
+def test_initial_transform_proposal_improves_synthetic_pair():
+    pair = make_synthetic_pair()
+
+    proposal = propose_initial_transform(
+        pair["aligned_ct_hwz"],
+        pair["gerber_spacing"],
+        pair["misaligned_ct_hwz"],
+        pair["fixed_spacing"],
+    )
+    repeated = propose_initial_transform(
+        pair["aligned_ct_hwz"],
+        pair["gerber_spacing"],
+        pair["misaligned_ct_hwz"],
+        pair["fixed_spacing"],
+    )
+
+    assert proposal.score > proposal.initial_score + 0.03
+    assert proposal.improvement > 0.03
+    assert proposal.evaluations > 1
+    assert proposal.confidence in {"low", "moderate", "high"}
+    assert repeated == proposal
+
+
+def test_registration_quality_rejects_mismatched_shapes():
+    fixed = np.zeros((8, 8, 4), dtype=np.float32)
+    moving = np.zeros((8, 7, 4), dtype=np.float32)
+
+    with np.testing.assert_raises(ValueError):
+        registration_quality(fixed, moving)

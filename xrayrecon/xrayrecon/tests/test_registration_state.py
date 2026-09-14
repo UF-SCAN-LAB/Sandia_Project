@@ -27,13 +27,13 @@ def _registered_mainwin(monkeypatch):
     win = MainWin(dataCube=phantomSpheres())
     win._loadSyntheticRegistrationDemo()
     win.openRegistrationTool()
-    win._registrationWindow.acceptBtn.click()
+    win.registrationPanel.acceptBtn.click()
     return win
 
 
 def test_transfer_gerber_labels_succeeds_when_state_is_consistent(qapp, monkeypatch):
     win = _registered_mainwin(monkeypatch)
-    assert win._registration_transform is not None
+    assert win._registration_session.accepted_transform is not None
 
     win.transferGerberLabels()
 
@@ -74,11 +74,10 @@ def test_open_registration_tool_blocked_when_user_declines_unconfirmed_spacing(q
     win._loadSyntheticRegistrationDemo()
     # Reset to the unconfirmed state on purpose (the demo already confirms it).
     win.model._spacing_confirmed = False
-    win._registrationWindow = None
 
     win.openRegistrationTool()
 
-    assert win._registrationWindow is None
+    assert win._workspaceStack.currentWidget() is win._mainWorkspacePage
 
 
 def test_open_registration_tool_proceeds_when_user_accepts_unconfirmed_spacing(qapp, monkeypatch):
@@ -89,16 +88,18 @@ def test_open_registration_tool_proceeds_when_user_accepts_unconfirmed_spacing(q
 
     win.openRegistrationTool()
 
-    assert win._registrationWindow is not None
+    assert win._workspaceStack.currentWidget() is win.registrationPanel
 
 
 def test_voxelize_stackup_invalidates_prior_registration(qapp, monkeypatch):
     _silence_message_boxes(monkeypatch)
     win = MainWin(dataCube=phantomSpheres())
-    win._registration_transform = RigidScaleTransform(tx=1.0)
-    win._registration_moving_spacing = (0.1, 0.1, 0.1)
-    win._registration_fixed_spacing = (0.1, 0.1, 0.1)
-    win._registration_fixed_shape = (10, 10, 10)
+    moving = np.zeros((10, 10, 10), dtype=np.float32)
+    fixed = np.zeros((10, 10, 10), dtype=np.float32)
+    spacing = (0.1, 0.1, 0.1)
+    win._registration_session.configure(moving, spacing, fixed, spacing)
+    win._registration_session.update_current(RigidScaleTransform(tx=1.0))
+    win._registration_session.accept()
 
     def _fake_rasterize(self, content):
         mask = np.zeros((10, 10), dtype=np.uint8)
@@ -115,7 +116,5 @@ def test_voxelize_stackup_invalidates_prior_registration(qapp, monkeypatch):
         )
         win._voxelize_stackup(config, tmp_path / "stackup.json")
 
-    assert win._registration_transform is None
-    assert win._registration_moving_spacing is None
-    assert win._registration_fixed_spacing is None
-    assert win._registration_fixed_shape is None
+    assert win._registration_session.accepted_transform is None
+    assert win._registration_session.inputs is None

@@ -80,6 +80,47 @@ The central hub of the application. It:
 - Sets up the UI (plots, tables, 3D viewer).
 - Registers tools (ParameterEditor) for actions like loading files (NPY, Gerber), creating S3A projects, and fixing rotation.
 - Connects signals from the selection table to update the 3D view.
+- Owns a central stacked workspace: the normal dual-pane CT/Gerber view and the
+  embedded `RegistrationPanel` and `AMAnalysisPanel`. Registration or AM
+  analysis switches pages without creating another top-level window.
+
+### Registration
+
+- `xrayrecon.registration.RegistrationSession` owns the current edit, explicit
+  accepted transform, score/proposal metadata, and moving/fixed input signature.
+- `xrayrecon.gui.registration.RegistrationPanel` is an embedded `QWidget` that
+  renders the overlay and edits the shared session.
+- `MainWin` validates the accepted session against current array identities,
+  shapes, and physical spacing before label transfer. New same-shape datasets
+  are therefore detected as stale.
+- `xrayrecon.synthetic_registration` provides production-owned deterministic
+  demo and regression cases, including the interpretable PCB showcase's
+  canonical multi-material labels, recognizable geometry, CT degradation,
+  layer metadata, and known transform. Application code does not import from
+  `tests`.
+- `materials.material_labels_to_zeff_rhoe` converts those shared canonical
+  labels into the `(Z, H, W, 2)` physical-property input consumed by
+  `alvarez_macovski.simulate_am_volume`. The second channel is explicitly
+  relative electron density to water; `MaterialProperties` stores mass density
+  separately and provides conversion to `10^23 electrons/cm3`.
+- AM results retain raw reconstruction and separately named
+  material-regularized volumes/labels, projection-consistency residual, and a
+  bounded confidence indicator. `gui.am_plot_window.AMAnalysisPanel` presents
+  these results in the main workspace. Confidence is a quality indicator, not
+  a probability, and never hides the raw inversion.
+- `am_acquisition.AMAcquisitionConfig` owns spectra, angular sampling, pixel
+  size, noise assumptions, LUT bounds, calibration ID, and simulated/measured
+  provenance. `PairedProjectionData` is the validated boundary for low/high
+  negative-log projections. Metadata is attached to `AMResult` attributes so
+  the result mapping remains array-only for backward compatibility.
+- `am_calibration.AMCalibrationModel` fits material response on named training
+  inserts and is evaluated on held-out materials. Z-effective calibration uses
+  the explicitly material-regularized channel because low-Z raw photoelectric
+  response can collapse beside high-Z inserts; relative electron density uses
+  the raw, more stable Compton channel. Raw arrays remain unchanged.
+- Uncertainty combines leave-one-material-out response error with voxel-level
+  projection residual and density disagreement. The displayed interval is an
+  empirically evaluated nominal interval, not a universal scanner guarantee.
 
 ### `LayerModel` (xrayrecon.gui.layermodel)
 Holds the state of the loaded data:

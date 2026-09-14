@@ -1,18 +1,28 @@
 import numpy as np
+from pyqtgraph.Qt import QtWidgets
 
-from xrayrecon.gui.registration import RegistrationWindow
+from xrayrecon.gui.registration import RegistrationPanel
+from xrayrecon.gui.view3d import PCBViewer3D
 from xrayrecon.tests.fixtures import make_synthetic_pair
 
 
-def test_registration_window_builds_and_recovers_known_transform(qapp):
-    pair = make_synthetic_pair()
-
-    win = RegistrationWindow(
+def _panel_for(pair):
+    panel = RegistrationPanel()
+    panel.setVolumes(
         pair["aligned_ct_hwz"],
         pair["gerber_spacing"],
         pair["misaligned_ct_hwz"],
         pair["fixed_spacing"],
     )
+    return panel
+
+
+def test_registration_panel_is_embeddable_and_recovers_known_transform(qapp):
+    pair = make_synthetic_pair()
+    win = _panel_for(pair)
+
+    assert isinstance(win, QtWidgets.QWidget)
+    assert not isinstance(win, QtWidgets.QMainWindow)
 
     t = pair["known_transform"]
     win.txSbox.setValue(t.tx)
@@ -36,12 +46,7 @@ def test_registration_window_builds_and_recovers_known_transform(qapp):
 
 def test_registration_window_reset_restores_identity(qapp):
     pair = make_synthetic_pair()
-    win = RegistrationWindow(
-        pair["aligned_ct_hwz"],
-        pair["gerber_spacing"],
-        pair["misaligned_ct_hwz"],
-        pair["fixed_spacing"],
-    )
+    win = _panel_for(pair)
 
     win.txSbox.setValue(1.0)
     win.rotSbox.setValue(10.0)
@@ -54,12 +59,7 @@ def test_registration_window_reset_restores_identity(qapp):
 
 def test_registration_window_sliders_sweep_without_raising(qapp):
     pair = make_synthetic_pair()
-    win = RegistrationWindow(
-        pair["aligned_ct_hwz"],
-        pair["gerber_spacing"],
-        pair["misaligned_ct_hwz"],
-        pair["fixed_spacing"],
-    )
+    win = _panel_for(pair)
 
     for tx in (-1.0, 0.0, 1.0):
         win.txSbox.setValue(tx)
@@ -67,3 +67,25 @@ def test_registration_window_sliders_sweep_without_raising(qapp):
         win.rotSbox.setValue(rot)
     for scale in (0.2, 1.0, 5.0):
         win.scaleSbox.setValue(scale)
+
+
+def test_suggested_alignment_improves_score_without_accepting(qapp):
+    pair = make_synthetic_pair()
+    win = _panel_for(pair)
+    accepted = []
+    win.sigTransformAccepted.connect(accepted.append)
+    initial_score = win._currentQualityScore
+
+    win.suggestBtn.click()
+
+    suggested_score = win._currentQualityScore
+    assert suggested_score > initial_score
+    assert "suggestion" in win.qualityLabel.text()
+    assert accepted == []
+
+
+def test_3d_viewer_starts_with_valid_rgba_texture(qapp):
+    viewer = PCBViewer3D()
+
+    assert viewer.volume.data.shape == (1, 1, 1, 4)
+    assert viewer.volume.data.dtype == np.uint8
