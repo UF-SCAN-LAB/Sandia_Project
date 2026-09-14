@@ -36,10 +36,22 @@ def test_voxelize_stackup_return_material_ids_matches_feature_background():
     cu_idx = VOX_MATERIAL_NAMES.index("COPPER")
     air_idx = VOX_MATERIAL_NAMES.index("AIR")
     assert set(np.unique(ids).tolist()) <= {cu_idx, air_idx}
-    # Top-left quadrant (feature) should be COPPER, rest AIR.
-    h, w = ids.shape[1:]
-    assert np.all(ids[:, : h // 2, : w // 2] == cu_idx)
-    assert np.all(ids[:, h // 2 :, w // 2 :] == air_idx)
+    assert ids.shape == (2, 32, 32)
+    # The raster occupies its 2x2 mm physical bounds inside the 1 mm margin.
+    assert np.all(ids[:, 8:16, 8:16] == cu_idx)
+    assert np.all(ids[:, :8, :] == air_idx)
+    assert np.all(ids[:, 16:24, 16:24] == air_idx)
+
+
+def test_voxelize_stackup_uses_raster_bounds_for_grid_size():
+    gl = _checkerboard_layer()
+    copper = get_material("COPPER")
+    air = get_material("AIR")
+    vox = Voxelizer(resolution_xy=0.25, resolution_z=0.05)
+
+    vol = vox.voxelize_stackup([(gl, 0.1, copper, air)], air)
+
+    assert vol.shape[:3] == (2, 16, 16)
 
 
 def test_voxelize_stackup_material_id_matches_by_name_not_identity():
