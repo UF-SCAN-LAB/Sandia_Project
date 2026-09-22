@@ -7,6 +7,10 @@ No real data required. The phantom is generated procedurally. This is a thin
 launcher around MainWin.loadPhantomDemo(), the same action reachable from the
 "Load Phantom Demo" toolbar button in the running app.
 """
+from xrayrecon.windows_cuda import prepare_optional_torch_dlls
+
+prepare_optional_torch_dlls()
+
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 

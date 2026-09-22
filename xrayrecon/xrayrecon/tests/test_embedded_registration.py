@@ -1,3 +1,8 @@
+import importlib.util
+from pathlib import Path
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
@@ -6,7 +11,9 @@ from xrayrecon.alvarez_macovski import AMResult
 from xrayrecon.gui.app import MainWin
 from xrayrecon.gui.am_plot_window import AMAnalysisPanel
 from xrayrecon.gui.registration import RegistrationPanel
+from xrayrecon.gui.stackup_editor import StackupEditorWindow
 from xrayrecon.gui.helpers import phantomSpheres
+from xrayrecon.stackup import StackupConfig, StackupLayer
 
 
 def _silence_messages(monkeypatch):
@@ -32,6 +39,133 @@ def _registration_ready_mainwin(monkeypatch):
     win._loadSyntheticRegistrationDemo()
     win.openRegistrationTool()
     return win, seen
+
+
+@pytest.mark.gui
+def test_stackup_am_processor_selection_reaches_both_actions(qapp):
+    calls = []
+    config = StackupConfig(
+        layers=[StackupLayer(file="layer.gbr", name="L1", thickness=0.1)]
+    )
+    editor = StackupEditorWindow(
+        lambda *_args: None,
+        lambda _config, _path, processor: calls.append(("ct", processor)),
+        lambda _config, _path, processor: calls.append(("plot", processor)),
+        lambda _config, _path, processor: calls.append(("volume", processor)),
+    )
+    editor.setConfig(config, Path.cwd())
+
+    assert editor.processorCombo.currentData() == "cpu"
+    editor._onShowAMPlot()
+    editor.processorCombo.setCurrentIndex(editor.processorCombo.findData("cuda"))
+    editor._onSimulate()
+    editor._onShowAMVolume()
+
+    assert calls == [("plot", "cpu"), ("ct", "cuda"), ("volume", "cuda")]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DLL-order regression")
+def test_optional_torch_dll_preparation_allows_qt_then_torch_import():
+    if importlib.util.find_spec("torch") is None:
+        pytest.skip("optional PyTorch is not installed")
+    code = """
+import sys
+from xrayrecon.windows_cuda import prepare_optional_torch_dlls
+assert prepare_optional_torch_dlls()
+assert "torch" not in sys.modules
+import pyqtgraph
+import torch
+"""
+    subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+    )
+
+
+def test_gui_startup_does_not_require_optional_torch():
+    code = """
+import importlib.abc
+import sys
+class NoTorch(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "torch" or fullname.startswith("torch."):
+            raise ImportError("blocked optional torch")
+sys.meta_path.insert(0, NoTorch())
+from xrayrecon.gui import MainWin
+assert MainWin is not None
+assert "torch" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+    )
+
+
+@pytest.mark.gui
+def test_stackup_am_cuda_selection_drives_both_backends_and_physical_spacing(
+    qapp, monkeypatch
+):
+    win = MainWin(dataCube=phantomSpheres())
+    _silence_messages(monkeypatch)
+    volume = np.zeros((1, 6, 8, 2), dtype=np.float32)
+    config = StackupConfig(layers=[], resolution_xy=0.25, resolution_z=0.05)
+    captured = {}
+    expected = {"complete": True}
+
+    monkeypatch.setattr(
+        win,
+        "_voxelize_stackup",
+        lambda *_args, **_kwargs: (volume, [], [], []),
+    )
+
+    def fake_simulation(actual_volume, **kwargs):
+        captured.update(volume=actual_volume, kwargs=kwargs)
+        return expected
+
+    monkeypatch.setattr(app_module, "simulate_am_volume", fake_simulation)
+
+    actual = win._runAMDecomposition(config, Path.cwd(), "cuda")
+
+    assert actual is expected
+    assert captured["volume"] is volume
+    assert captured["kwargs"] == {
+        "pixel_size_cm": 0.025,
+        "backend": "cuda",
+        "projection_backend": "cuda",
+    }
+
+
+@pytest.mark.gui
+def test_stackup_ct_cuda_selection_drives_projection_backend(qapp, monkeypatch):
+    win = MainWin(dataCube=phantomSpheres())
+    _silence_messages(monkeypatch)
+    volume = np.zeros((1, 6, 8, 2), dtype=np.float32)
+    config = StackupConfig(layers=[], resolution_xy=0.25, resolution_z=0.05)
+    captured = {}
+
+    monkeypatch.setattr(
+        win,
+        "_voxelize_stackup",
+        lambda *_args, **_kwargs: (volume, [], [], []),
+    )
+
+    def fake_ct(actual_volume, **kwargs):
+        captured.update(volume=actual_volume, kwargs=kwargs)
+        return np.zeros(volume.shape[:3], dtype=np.float32)
+
+    monkeypatch.setattr(app_module, "simulate_ct_volume", fake_ct)
+    monkeypatch.setattr(win.viewer_3d_left, "setDataCube", lambda *_args: None)
+    monkeypatch.setattr(win.viewer_3d_left, "resetCamera", lambda: None)
+
+    win._simulateXrayFromEditor(config, Path.cwd(), "cuda")
+
+    assert captured["volume"] is volume
+    assert captured["kwargs"] == {
+        "num_angles": 8,
+        "projection_backend": "cuda",
+    }
 
 
 @pytest.mark.gui

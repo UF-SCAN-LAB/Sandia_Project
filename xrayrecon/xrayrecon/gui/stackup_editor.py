@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -48,9 +49,9 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
         voxelizeCallback: Callable[[StackupConfig, Path], None],
-        simulateCallback: Callable[[StackupConfig, Path], None],
-        amPlotCallback: Callable[[StackupConfig, Path], None],
-        amVolumeCallback: Callable[[StackupConfig, Path], None],
+        simulateCallback: Callable[[StackupConfig, Path, str], None],
+        amPlotCallback: Callable[[StackupConfig, Path, str], None],
+        amVolumeCallback: Callable[[StackupConfig, Path, str], None],
         parent=None,
     ):
         super().__init__(parent)
@@ -78,6 +79,30 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
         voxelizeBtn = QtWidgets.QPushButton("Voxelize && Show")
         voxelizeBtn.setStyleSheet("font-weight: bold;")
 
+        self.simCoarsenessSlider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.simCoarsenessSlider.setRange(1, 8)
+        self.simCoarsenessSlider.setValue(2)
+        self.simCoarsenessSlider.setFixedWidth(110)
+        self.simCoarsenessSlider.setToolTip(
+            "Simulation preview spacing multiplier. 1x uses full stackup "
+            "resolution; larger values run faster with fewer voxels."
+        )
+        self.simCoarsenessLabel = QtWidgets.QLabel()
+        self._refreshSimCoarsenessLabel(self.simCoarsenessSlider.value())
+        self.simCoarsenessSlider.valueChanged.connect(self._refreshSimCoarsenessLabel)
+
+        self.processorCombo = QtWidgets.QComboBox()
+        self.processorCombo.setObjectName("processorCombo")
+        self.processorCombo.addItem("CPU", "cpu")
+        self.processorCombo.addItem("GPU (CUDA)", "cuda")
+        self.processorCombo.setCurrentIndex(0)
+        self.processorCombo.setToolTip(
+            "Processor for CT forward projection and Alvarez-Macovski spectrum "
+            "and projection calculations. CT filtered backprojection remains "
+            "on CPU. GPU requires CUDA-enabled PyTorch and fails explicitly "
+            "if unavailable."
+        )
+
         addBtn.clicked.connect(self._onAddLayers)
         removeBtn.clicked.connect(self._onRemoveSelected)
         loadJsonBtn.clicked.connect(self._onLoadJson)
@@ -93,6 +118,11 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
         for btn in [addBtn, removeBtn, loadJsonBtn, saveJsonBtn]:
             btnLayout.addWidget(btn)
         btnLayout.addStretch()
+        btnLayout.addWidget(QtWidgets.QLabel("X-ray Coarseness:"))
+        btnLayout.addWidget(self.simCoarsenessSlider)
+        btnLayout.addWidget(self.simCoarsenessLabel)
+        btnLayout.addWidget(QtWidgets.QLabel("Processor:"))
+        btnLayout.addWidget(self.processorCombo)
         btnLayout.addWidget(simulateBtn)
         btnLayout.addWidget(amPlotBtn)
         btnLayout.addWidget(amVolumeBtn)
@@ -173,6 +203,9 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
         colorBtn.setStyleSheet(f"background-color: rgba({r},{g},{b},{a}); border: 1px solid #444;")
         colorBtn.setText(f"{r},{g},{b},{a}")
 
+    def _refreshSimCoarsenessLabel(self, value: int):
+        self.simCoarsenessLabel.setText(f"{int(value)}x")
+
     # --- toolbar actions -------------------------------------------------
 
     def _onAddLayers(self):
@@ -247,17 +280,25 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
     def _onSimulate(self):
         config = self._buildValidConfig()
         if config is not None:
-            self._simulateCallback(config, self._lastStackupPath)
+            self._simulateCallback(
+                self._simulationConfig(config),
+                self._lastStackupPath,
+                self.processorCombo.currentData(),
+            )
 
     def _onShowAMPlot(self):
         config = self._buildValidConfig()
         if config is not None:
-            self._amPlotCallback(config, self._lastStackupPath)
+            self._amPlotCallback(
+                config, self._lastStackupPath, self.processorCombo.currentData()
+            )
 
     def _onShowAMVolume(self):
         config = self._buildValidConfig()
         if config is not None:
-            self._amVolumeCallback(config, self._lastStackupPath)
+            self._amVolumeCallback(
+                config, self._lastStackupPath, self.processorCombo.currentData()
+            )
 
     # --- config <-> table --------------------------------------------------
 
@@ -305,4 +346,14 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
             resolution_z=extras.get("resolution_z", 0.01),
             substrate_material=extras.get("substrate_material", "FR4"),
             default_gap_slices=extras.get("default_gap_slices", 20),
+        )
+
+    def _simulationConfig(self, config: StackupConfig) -> StackupConfig:
+        factor = max(1, int(self.simCoarsenessSlider.value()))
+        if factor == 1:
+            return config
+        return replace(
+            config,
+            resolution_xy=config.resolution_xy * factor,
+            resolution_z=config.resolution_z * factor,
         )

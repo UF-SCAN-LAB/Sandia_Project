@@ -28,6 +28,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7.4"]
+# CUDA execution requires a CUDA-enabled PyTorch build and a working driver.
+# CPU-only installations do not need this extra or a system CUDA compiler.
+cuda = ["torch>=2.3"]
 
 [tool.setuptools]
 package-dir = {"" = "xrayrecon"}
@@ -44,6 +47,7 @@ markers = [
     "integration: tests spanning multiple application components",
     "gui: headless Qt interaction tests",
     "slow: tests intentionally excluded from the fast development loop",
+    "cuda: requires optional PyTorch and a working CUDA device",
 ]
 filterwarnings = [
     "error::RuntimeWarning:xrayrecon\\..*",

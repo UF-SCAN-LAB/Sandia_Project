@@ -889,7 +889,9 @@ class MainWin(QtWidgets.QMainWindow):
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to voxelize stackup:\n{e}")
 
-    def _simulateXrayFromEditor(self, config: StackupConfig, stackup_path: Path):
+    def _simulateXrayFromEditor(
+        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
+    ):
         """Simulate a CT reconstruction of *config* and show it in the LEFT pane."""
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
@@ -902,7 +904,12 @@ class MainWin(QtWidgets.QMainWindow):
             vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
                 config, stackup_path
             )
-            sim_zhw = simulate_ct_volume(vol)
+            preview_angles = min(max(vol.shape[1], vol.shape[2]), 360)
+            sim_zhw = simulate_ct_volume(
+                vol,
+                num_angles=preview_angles,
+                projection_backend=processor,
+            )
             sim_hwz = np.moveaxis(sim_zhw, 0, -1)
 
             self._current_rgba_base_left = None
@@ -919,10 +926,14 @@ class MainWin(QtWidgets.QMainWindow):
         QtWidgets.QApplication.restoreOverrideCursor()
         QtWidgets.QMessageBox.information(
             self, "Simulated X-ray",
-            f"Simulated CT volume: {sim_hwz.shape} (FBP reconstruction via Radon transform)"
+            f"Simulated CT volume: {sim_hwz.shape} "
+            f"at {self._gerber_voxel_spacing_mm[0]:.4g} mm/px XY, "
+            f"{preview_angles} projection angles"
         )
 
-    def _runAMDecomposition(self, config: StackupConfig, stackup_path: Path) -> dict | None:
+    def _runAMDecomposition(
+        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
+    ) -> dict | None:
         """Voxelize *config* and run the Alvarez-Macovski dual-energy
         decomposition across every slice. Returns None (after showing an
         error dialog) on failure."""
@@ -935,7 +946,12 @@ class MainWin(QtWidgets.QMainWindow):
             vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
                 config, stackup_path
             )
-            result = simulate_am_volume(vol)
+            result = simulate_am_volume(
+                vol,
+                pixel_size_cm=config.resolution_xy / 10.0,
+                backend=processor,
+                projection_backend=processor,
+            )
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -945,10 +961,12 @@ class MainWin(QtWidgets.QMainWindow):
             QtWidgets.QApplication.restoreOverrideCursor()
         return result
 
-    def _showAlvarezMacovskiPlot(self, config: StackupConfig, stackup_path: Path):
+    def _showAlvarezMacovskiPlot(
+        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
+    ):
         """Run the Alvarez-Macovski dual-energy decomposition on *config* and
         open the embedded quantitative comparison workspace."""
-        result = self._runAMDecomposition(config, stackup_path)
+        result = self._runAMDecomposition(config, stackup_path, processor)
         if result is None:
             return
         self._am_result = result
@@ -987,12 +1005,14 @@ class MainWin(QtWidgets.QMainWindow):
         plotWindow.raise_()
         plotWindow.activateWindow()
 
-    def _showAMVolumeIn3D(self, config: StackupConfig, stackup_path: Path):
+    def _showAMVolumeIn3D(
+        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
+    ):
         """Run the Alvarez-Macovski decomposition across every slice of the
         stackup and render the recovered volume in the LEFT 3D pane,
         colorized by whichever quantity (Z_eff / rho_e) is currently
         toggled via amColorZeffBtn/amColorRhoeBtn."""
-        result = self._runAMDecomposition(config, stackup_path)
+        result = self._runAMDecomposition(config, stackup_path, processor)
         if result is None:
             return
         self._am_result = result

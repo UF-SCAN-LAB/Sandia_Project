@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,8 @@ def voxelize_stackup_config(
     if config.resolution_xy <= 0 or config.resolution_z <= 0:
         raise ValueError("resolution_xy and resolution_z must both be > 0")
 
-    rasterizer = PyGerberRasterizer(dpi=config.dpi)
+    effective_dpi = max(int(config.dpi), int(math.ceil(25.4 / config.resolution_xy)))
+    rasterizer = PyGerberRasterizer(dpi=effective_dpi)
     substrate_mat = material_or_error(config.substrate_material)
     air_mat = material_or_error("AIR")
 
@@ -62,10 +64,11 @@ def voxelize_stackup_config(
 
         layer = GerberLayer(layer_cfg.name)
         layer.raster_mask = mask
+        layer.raster_resolution_xy = 25.4 / effective_dpi
 
         h_px, w_px = mask.shape
-        width_mm = w_px / (config.dpi / 25.4)
-        height_mm = h_px / (config.dpi / 25.4)
+        width_mm = w_px / (effective_dpi / 25.4)
+        height_mm = h_px / (effective_dpi / 25.4)
         layer.update_bounds(0, 0)
         layer.update_bounds(width_mm, height_mm)
 

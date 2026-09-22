@@ -11,6 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # Must be set before the first PyQt5/pyqtgraph import in the process.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Match the GUI entry point's Windows DLL preparation before test modules
+# import pyqtgraph. This does not import torch or initialize CUDA.
+from xrayrecon.windows_cuda import prepare_optional_torch_dlls
+
+prepare_optional_torch_dlls()
+
 import pytest
 
 

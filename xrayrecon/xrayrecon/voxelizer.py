@@ -8,6 +8,12 @@ from .materials import MATERIAL_NAMES, MaterialProperties
 _MATERIAL_ID_BY_NAME = {name: idx for idx, name in enumerate(MATERIAL_NAMES)}
 
 
+def _finite_bounds(gl: GerberLayer) -> bool:
+    return all(np.isfinite(v) for v in gl.bounds) and (
+        gl.bounds[2] > gl.bounds[0] and gl.bounds[3] > gl.bounds[1]
+    )
+
+
 class Voxelizer:
     def __init__(self, resolution_xy: float = 0.01, resolution_z: float = 0.01):
         """
@@ -26,28 +32,19 @@ class Voxelizer:
         min_x, min_y = float('inf'), float('inf')
         max_x, max_y = float('-inf'), float('-inf')
         
-        # Check for raster masks or vector content
-        valid_layers = [
-            l for l in layers 
-            if isinstance(l[0], GerberLayer) and (l[0].objects or l[0].raster_mask is not None)
-        ]
-        
-        if not valid_layers:
+        has_bounds = False
+        for gl, _, _, _ in layers:
+            if isinstance(gl, GerberLayer) and _finite_bounds(gl):
+                min_x = min(min_x, gl.bounds[0])
+                min_y = min(min_y, gl.bounds[1])
+                max_x = max(max_x, gl.bounds[2])
+                max_y = max(max_y, gl.bounds[3])
+                has_bounds = True
+
+        if not has_bounds:
             # Fallback size
             min_x, min_y, max_x, max_y = 0, 0, 10, 10
-        else:
-            for gl, _, _, _ in layers:
-                if gl:
-                    if gl.objects:
-                        min_x = min(min_x, gl.bounds[0])
-                        min_y = min(min_y, gl.bounds[1])
-                        max_x = max(max_x, gl.bounds[2])
-                        max_y = max(max_y, gl.bounds[3])
-                    # If raster mask present, we assume it aligns? Or we assume objects define bounds?
-                    # Ideally raster mask comes with size/resolution metadata.
-                    # Current GerberLayer implementation doesn't store bounds for raster mask. 
-                    # We will rely on objects for bounds if available, or default.
-                    
+
         # Add margin
         margin = 1.0 # mm
         min_x -= margin
@@ -77,21 +74,45 @@ class Voxelizer:
             
             # If PyGerber raster mask exists, use it/resize it
             if gl and gl.raster_mask is not None:
-                # Assuming raster_mask should cover the whole bounds or be mapped.
-                # Since simple PyGerber usage dumps the whole file content to image, 
-                # we need to know the bounds of THAT image relative to our coordinate system.
-                # This is complex without alignment. 
-                # For this integration task, let's assume the raster_mask IS the mask (resized if needed).
-                
-                # Check dimensions
-                r_h, r_w = gl.raster_mask.shape
-                
-                # Resize raster to current voxel grid size
-                # This is a crude mapping (stretches to fill).
-                # Proper way: align based on units. But we lack metadata from simple PyGerber render for origin.
-                # Users asked to "Integrate ... such that we can parse".
-                
-                mask = cv.resize(gl.raster_mask, (w_px, h_px), interpolation=cv.INTER_NEAREST)
+                mask = np.zeros((h_px, w_px), dtype=np.uint8)
+
+                if _finite_bounds(gl):
+                    layer_min_x, layer_min_y, layer_max_x, layer_max_y = gl.bounds
+                    target_w = max(
+                        1, int(np.ceil((layer_max_x - layer_min_x) / self.res_xy))
+                    )
+                    target_h = max(
+                        1, int(np.ceil((layer_max_y - layer_min_y) / self.res_xy))
+                    )
+                    resized = cv.resize(
+                        gl.raster_mask,
+                        (target_w, target_h),
+                        interpolation=cv.INTER_NEAREST,
+                    )
+
+                    x0 = int(np.round((layer_min_x - min_x) / self.res_xy))
+                    y0 = int(np.round((layer_min_y - min_y) / self.res_xy))
+                    x1 = x0 + target_w
+                    y1 = y0 + target_h
+
+                    src_x0 = max(0, -x0)
+                    src_y0 = max(0, -y0)
+                    dst_x0 = max(0, x0)
+                    dst_y0 = max(0, y0)
+                    dst_x1 = min(w_px, x1)
+                    dst_y1 = min(h_px, y1)
+
+                    if dst_x1 > dst_x0 and dst_y1 > dst_y0:
+                        mask[dst_y0:dst_y1, dst_x0:dst_x1] = resized[
+                            src_y0 : src_y0 + (dst_y1 - dst_y0),
+                            src_x0 : src_x0 + (dst_x1 - dst_x0),
+                        ]
+                else:
+                    mask = cv.resize(
+                        gl.raster_mask,
+                        (w_px, h_px),
+                        interpolation=cv.INTER_NEAREST,
+                    )
                 
             elif gl and gl.objects:
                 # Custom Simple Vector Rasterizer

@@ -87,6 +87,33 @@ def test_voxelize_stackup_config_spacing_matches_config(tmp_path, monkeypatch):
     assert spacing_mm == (0.15, 0.15, 0.07)
 
 
+def test_voxelize_stackup_config_rasterizes_at_requested_xy_resolution(
+    tmp_path, monkeypatch
+):
+    seen_dpi = []
+
+    def _fake_rasterize(self, content):
+        seen_dpi.append(self.dpi)
+        mask = np.zeros((10, 10), dtype=np.uint8)
+        mask[4:6, 4:6] = 255
+        return mask
+
+    monkeypatch.setattr(PyGerberRasterizer, "rasterize", _fake_rasterize)
+    gerber_file = tmp_path / "layer.gbr"
+    gerber_file.write_text("dummy")
+
+    config = StackupConfig(
+        layers=[StackupLayer(file="layer.gbr", name="L1", thickness=0.1)],
+        dpi=300,
+        resolution_xy=0.05,
+        resolution_z=0.05,
+    )
+
+    voxelize_stackup_config(config, tmp_path / "stackup.json")
+
+    assert seen_dpi == [508]
+
+
 def test_voxelize_stackup_config_rejects_nonpositive_resolution(tmp_path):
     bad_config = StackupConfig(layers=[], resolution_xy=0.0, resolution_z=0.05)
     try:

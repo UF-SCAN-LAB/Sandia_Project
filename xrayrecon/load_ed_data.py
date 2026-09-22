@@ -3,6 +3,10 @@
 Run from the xrayrecon/ directory:
     python load_ed_data.py
 """
+from xrayrecon.windows_cuda import prepare_optional_torch_dlls
+
+prepare_optional_torch_dlls()
+
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore

@@ -109,9 +109,19 @@ def forward_arr(A1_arr, A2_arr, E, phi):
 
 
 def forward_spectrum(
-    A1_arr: np.ndarray, A2_arr: np.ndarray, spectrum: AMSpectrum
+    A1_arr: np.ndarray, A2_arr: np.ndarray, spectrum: AMSpectrum,
+    *, backend: str = "cpu", batch_size: int = 4096,
 ) -> np.ndarray:
-    """Vectorized Beer-Lambert projection for a discrete normalized spectrum."""
+    """Discrete Beer-Lambert projection; CPU remains the default.
+
+    Explicit ``backend="cuda"`` uses optional PyTorch and raises if CUDA is
+    unavailable. ``batch_size`` bounds CUDA ray batches; CPU math is unchanged.
+    Both paths return a flat float64 NumPy array.
+    """
+    if backend != "cpu":
+        return forward_spectra(
+            A1_arr, A2_arr, (spectrum,), backend=backend, batch_size=batch_size
+        )[0]
     a1 = np.asarray(A1_arr, dtype=float).ravel()
     a2 = np.asarray(A2_arr, dtype=float).ravel()
     energies = np.asarray(spectrum.energies_kev, dtype=float)
@@ -119,6 +129,51 @@ def forward_spectrum(
     exponent = -np.outer(a1, f1(energies)) - np.outer(a2, f2(energies))
     transmitted = np.sum(weights * np.exp(exponent), axis=1)
     return -np.log(np.clip(transmitted, 1e-12, None))
+
+
+def _make_spectrum_evaluator(spectra, *, backend="cpu", batch_size=4096):
+    """Create a call-scoped evaluator, retaining CUDA tables across slices."""
+    spectra = tuple(spectra)
+    if not spectra:
+        raise ValueError("at least one spectrum is required")
+    if backend == "cpu":
+        return lambda a1, a2: tuple(forward_spectrum(a1, a2, s) for s in spectra)
+    if backend != "cuda":
+        raise ValueError("backend must be 'cpu' or 'cuda'")
+    # Importing the application or using the CPU path never imports torch.
+    from .cuda_backend import CudaSpectrumEvaluator
+
+    return CudaSpectrumEvaluator(spectra, batch_size=batch_size).evaluate
+
+
+def forward_spectra(
+    A1_arr: np.ndarray, A2_arr: np.ndarray, spectra,
+    *, backend: str = "cpu", batch_size: int = 4096,
+) -> tuple[np.ndarray, ...]:
+    """Evaluate spectra together, sharing CUDA ray uploads and batch buffers.
+
+    Return one flat float64 NumPy array per spectrum. Inputs are never modified.
+    CUDA accepts equal flattened ray counts and never falls back to CPU.
+    """
+    evaluate = _make_spectrum_evaluator(
+        spectra, backend=backend, batch_size=batch_size
+    )
+    return evaluate(A1_arr, A2_arr)
+
+
+def _make_radon_projector(
+    image_shape, theta, *, projection_backend="cpu", projection_batch_size=8,
+):
+    """Retain optional CUDA geometry for one AM call; CPU needs no dependency."""
+    if projection_backend == "cpu":
+        return None
+    if projection_backend != "cuda":
+        raise ValueError("projection_backend must be 'cpu' or 'cuda'")
+    from .cuda_projection import CudaRadonProjector
+
+    return CudaRadonProjector(
+        image_shape, theta, angle_batch_size=projection_batch_size
+    ).project
 
 
 def to_a1a2(z_eff: np.ndarray, density: np.ndarray):
@@ -159,7 +214,8 @@ def _decompose_ray(l_lo, l_hi, a1_init, a2_init, a1_max):
 
 
 def _build_lut(
-    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None
+    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None,
+    *, evaluate=None,
 ):
     """Log-spaced A1 grid: real photoelectric coefficients span ~5 orders of
     magnitude (air/FR4 vs. copper/solder/gold), which a linear grid cannot
@@ -173,17 +229,23 @@ def _build_lut(
         Llo_grid = forward_arr(AA1, AA2, E_LO, PHI_LO)
         Lhi_grid = forward_arr(AA1, AA2, E_HI, PHI_HI)
     else:
-        Llo_grid = forward_spectrum(AA1, AA2, config.low_spectrum)
-        Lhi_grid = forward_spectrum(AA1, AA2, config.high_spectrum)
+        if evaluate is None:
+            evaluate = _make_spectrum_evaluator(
+                (config.low_spectrum, config.high_spectrum)
+            )
+        Llo_grid, Lhi_grid = evaluate(AA1, AA2)
     pts = np.column_stack([Llo_grid, Lhi_grid])
     return pts, AA1.ravel(), AA2.ravel()
 
 
 def _build_lut_inverter(
-    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None
+    a1_max: float, a2_max: float, config: AMAcquisitionConfig | None = None,
+    *, evaluate=None,
 ):
     """Build reusable joint interpolators for both AM basis coefficients."""
-    points, a1_values, a2_values = _build_lut(a1_max, a2_max, config)
+    points, a1_values, a2_values = _build_lut(
+        a1_max, a2_max, config, evaluate=evaluate
+    )
     values = np.column_stack([a1_values, a2_values])
     return (
         LinearNDInterpolator(points, values, fill_value=np.nan),
@@ -288,6 +350,7 @@ def _quality_maps(
     theta: np.ndarray,
     pixel_size_cm: float,
     target_shape: tuple[int, int],
+    *, project=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate projection inconsistency and reconstruction confidence.
 
@@ -298,8 +361,13 @@ def _quality_maps(
     Confidence combines that term with local edge sensitivity and signal
     strength. It is an interpretable quality indicator, not a probability.
     """
-    projected_a1 = radon(recon_a1, theta=theta, circle=False) * pixel_size_cm
-    projected_a2 = radon(recon_a2, theta=theta, circle=False) * pixel_size_cm
+    if project is None:
+        projected_a1 = radon(recon_a1, theta=theta, circle=False) * pixel_size_cm
+        projected_a2 = radon(recon_a2, theta=theta, circle=False) * pixel_size_cm
+    else:
+        projected_a1, projected_a2 = project(np.stack((recon_a1, recon_a2)))
+        projected_a1 = projected_a1 * pixel_size_cm
+        projected_a2 = projected_a2 * pixel_size_cm
     a1_scale = max(float(np.percentile(np.abs(measured_a1), 90)), 1e-6)
     a2_scale = max(float(np.percentile(np.abs(measured_a2), 90)), 1e-6)
     ray_residual = np.sqrt(
@@ -347,9 +415,28 @@ def _quality_maps(
 
 
 def simulate_am_projections(
-    vol: np.ndarray, config: AMAcquisitionConfig
+    vol: np.ndarray, config: AMAcquisitionConfig,
+    *, backend: str = "cpu", batch_size: int = 4096,
+    projection_backend: str = "cpu", projection_batch_size: int = 8,
 ) -> PairedProjectionData:
-    """Forward-project a property volume into validated low/high AM data."""
+    """Forward-project low/high AM data with independent optional backends.
+
+    ``backend`` selects spectral evaluation; ``projection_backend`` selects
+    Radon projection. Both default to CPU; seeded photon noise stays on CPU.
+    """
+    evaluate = _make_spectrum_evaluator(
+        (config.low_spectrum, config.high_spectrum),
+        backend=backend, batch_size=batch_size,
+    )
+    project = _make_radon_projector(
+        np.shape(vol)[1:3], config.theta_deg,
+        projection_backend=projection_backend,
+        projection_batch_size=projection_batch_size,
+    )
+    return _simulate_am_projections(vol, config, evaluate=evaluate, project=project)
+
+
+def _simulate_am_projections(vol, config, *, evaluate, project=None):
     vol = np.asarray(vol)
     if vol.ndim != 4 or vol.shape[-1] != 2:
         raise ValueError("AM volume must have shape (Z, H, W, 2)")
@@ -372,16 +459,18 @@ def simulate_am_projections(
     low_slices = []
     high_slices = []
     for z in range(z_depth):
-        sino_a1 = radon(a1_vol[z].astype(np.float32), theta=theta, circle=False)
-        sino_a2 = radon(a2_vol[z].astype(np.float32), theta=theta, circle=False)
+        if project is None:
+            sino_a1 = radon(a1_vol[z].astype(np.float32), theta=theta, circle=False)
+            sino_a2 = radon(a2_vol[z].astype(np.float32), theta=theta, circle=False)
+        else:
+            sino_a1, sino_a2 = project(np.stack((
+                a1_vol[z].astype(np.float32), a2_vol[z].astype(np.float32),
+            )))
         sino_a1 *= config.pixel_size_cm
         sino_a2 *= config.pixel_size_cm
-        low = forward_spectrum(sino_a1, sino_a2, config.low_spectrum).reshape(
-            sino_a1.shape
-        )
-        high = forward_spectrum(sino_a1, sino_a2, config.high_spectrum).reshape(
-            sino_a1.shape
-        )
+        low, high = evaluate(sino_a1, sino_a2)
+        low = low.reshape(sino_a1.shape)
+        high = high.reshape(sino_a1.shape)
         if config.photon_count is not None:
             low = _poisson_log_measurement(low, config.photon_count, rng)
             high = _poisson_log_measurement(high, config.photon_count, rng)
@@ -403,8 +492,36 @@ def reconstruct_am_projections(
     output_shape: tuple[int, int],
     zeff_clip: float | None = None,
     rhoe_clip: float | None = None,
+    backend: str = "cpu",
+    batch_size: int = 4096,
+    projection_backend: str = "cpu",
+    projection_batch_size: int = 8,
 ) -> AMResult:
-    """Reconstruct simulated or measured paired negative-log projections."""
+    """Reconstruct paired projections with optional spectra and reprojection.
+
+    ``projection_backend`` selects quality-map Radon reprojections only.
+    All backprojection, LUT interpolation and other quality math stay on CPU.
+    """
+    config = projections.config
+    evaluate = _make_spectrum_evaluator(
+        (config.low_spectrum, config.high_spectrum),
+        backend=backend, batch_size=batch_size,
+    )
+    project = _make_radon_projector(
+        output_shape, projections.theta_deg,
+        projection_backend=projection_backend,
+        projection_batch_size=projection_batch_size,
+    )
+    return _reconstruct_am_projections(
+        projections, output_shape=output_shape, zeff_clip=zeff_clip,
+        rhoe_clip=rhoe_clip, evaluate=evaluate, project=project,
+    )
+
+
+def _reconstruct_am_projections(
+    projections, *, output_shape, zeff_clip=None, rhoe_clip=None, evaluate,
+    project=None,
+):
     h, w = (int(output_shape[0]), int(output_shape[1]))
     if h <= 0 or w <= 0:
         raise ValueError("output_shape values must be positive")
@@ -428,7 +545,8 @@ def reconstruct_am_projections(
     projection_residual = np.zeros((z_depth, h, w), dtype=np.float32)
     confidence = np.zeros((z_depth, h, w), dtype=np.float32)
     decomposition_lut = _build_lut_inverter(
-        projections.a1_max_bound, projections.a2_max_bound, config
+        projections.a1_max_bound, projections.a2_max_bound, config,
+        evaluate=evaluate,
     )
     for z in range(z_depth):
         sino_a1_rec, sino_a2_rec = _decompose_sinogram(
@@ -467,6 +585,7 @@ def reconstruct_am_projections(
             theta,
             config.pixel_size_cm,
             (h, w),
+            project=project,
         )
     recovered_labels, zeff_regularized, rhoe_regularized = (
         regularize_recovered_material_properties(zeff_rec, rhoe_rec)
@@ -508,12 +627,25 @@ def simulate_am_volume(
     photon_count: int | None = None,
     random_seed: int | None = None,
     config: AMAcquisitionConfig | None = None,
+    backend: str = "cpu",
+    batch_size: int = 4096,
+    projection_backend: str = "cpu",
+    projection_batch_size: int = 8,
 ) -> AMResult:
     """Simulate and reconstruct a property volume through the AM pipeline.
 
     The legacy scalar arguments remain supported. New code should pass a
     validated ``AMAcquisitionConfig``. Supplying both forms is rejected so the
     physical acquisition is never ambiguous.
+
+    ``backend="cuda"`` explicitly selects optional PyTorch spectral evaluation
+    and raises if unavailable. One evaluator shares tables across slices and
+    LUT construction; the CPU default and CPU photon noise are preserved.
+
+    ``projection_backend="cuda"`` independently selects optional CUDA Radon
+    projection for acquisition and quality maps. One projector reuses geometry
+    across slices and dtypes; ``projection_batch_size`` bounds angles processed
+    together. Both backends default to CPU, and all backprojection stays on CPU.
     """
     volume = np.asarray(vol)
     if volume.ndim != 4 or volume.shape[-1] != 2:
@@ -541,14 +673,26 @@ def simulate_am_volume(
             )
     if acquisition.source_kind != "simulated":
         raise ValueError("simulate_am_volume requires source_kind='simulated'")
-    projections = simulate_am_projections(volume, acquisition)
+    evaluate = _make_spectrum_evaluator(
+        (acquisition.low_spectrum, acquisition.high_spectrum),
+        backend=backend, batch_size=batch_size,
+    )
+    project = _make_radon_projector(
+        (h, w), acquisition.theta_deg, projection_backend=projection_backend,
+        projection_batch_size=projection_batch_size,
+    )
+    projections = _simulate_am_projections(
+        volume, acquisition, evaluate=evaluate, project=project
+    )
     zeff_gt = volume[..., 0].astype(np.float32)
     rhoe_gt = volume[..., 1].astype(np.float32)
-    result = reconstruct_am_projections(
+    result = _reconstruct_am_projections(
         projections,
         output_shape=(h, w),
         zeff_clip=float(zeff_gt.max()) * 1.5 if zeff_gt.max() > 0 else K_REF_Z * 3,
         rhoe_clip=float(rhoe_gt.max()) * 1.5 if rhoe_gt.max() > 0 else 1.0,
+        evaluate=evaluate,
+        project=project,
     )
     result.update(
         zeff_ground_truth=zeff_gt,
