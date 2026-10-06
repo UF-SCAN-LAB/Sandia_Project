@@ -21,19 +21,24 @@ genuine dual-energy-CT limitation, not a bug.
 """
 from __future__ import annotations
 
+from time import perf_counter
+
 import numpy as np
 from scipy.ndimage import gaussian_filter, median_filter, sobel
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.optimize import fsolve
 
 from .am_acquisition import AMAcquisitionConfig, AMSpectrum, PairedProjectionData
+from .simulation_metrics import print_simulation_timing, simulation_record
+from .backprojection import make_backprojector
+from .reconstruction_metrics import am_reconstruction_metrics
 from .materials import (
     MATERIALS_DB,
     MATERIAL_COLORS,
     MATERIAL_NAMES,
     WATER_ELECTRON_DENSITY_E23_CM3,
 )
-from skimage.transform import iradon, radon
+from skimage.transform import radon
 
 PE_EXPONENT = 3.8
 K_REF_Z = 29.0  # copper as the reference Z -- keeps a1 ~ a2 order of magnitude there
@@ -60,6 +65,8 @@ class AMResult(dict):
         self.source_kind = acquisition_config.source_kind
         self.calibration_id = acquisition_config.calibration_id
         self.has_ground_truth = bool(has_ground_truth)
+        self.run_metrics = getattr(args[0], "run_metrics", None) if args else None
+        self.reconstruction_metrics = getattr(args[0], "reconstruction_metrics", {}) if args else {}
 
 
 def f1(E):
@@ -350,7 +357,7 @@ def _quality_maps(
     theta: np.ndarray,
     pixel_size_cm: float,
     target_shape: tuple[int, int],
-    *, project=None,
+    *, project=None, reconstruct=None, stage_timings=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate projection inconsistency and reconstruction confidence.
 
@@ -377,13 +384,14 @@ def _quality_maps(
             + ((projected_a2 - measured_a2) / a2_scale) ** 2
         )
     )
+    if reconstruct is None:
+        reconstruct = make_backprojector(ray_residual.shape[0], theta)
+    stage_started = perf_counter()
+    residual_backprojection = reconstruct(ray_residual[None], filter_name=None)[0]
+    if stage_timings is not None:
+        stage_timings["quality_backprojection_s"] = stage_timings.get("quality_backprojection_s", 0.0) + perf_counter() - stage_started
     residual_image = _match_reconstruction_shape(
-        iradon(
-            ray_residual,
-            theta=theta,
-            filter_name=None,
-            circle=False,
-        ),
+        residual_backprojection,
         target_shape,
     )
     residual = _robust_unit_interval(gaussian_filter(residual_image, 1.0))
@@ -496,11 +504,13 @@ def reconstruct_am_projections(
     batch_size: int = 4096,
     projection_backend: str = "cpu",
     projection_batch_size: int = 8,
+    backprojection_backend: str | None = None,
 ) -> AMResult:
     """Reconstruct paired projections with optional spectra and reprojection.
 
     ``projection_backend`` selects quality-map Radon reprojections only.
-    All backprojection, LUT interpolation and other quality math stay on CPU.
+    Backprojection follows projection_backend unless explicitly overridden.
+    LUT interpolation and other quality math stay on CPU.
     """
     config = projections.config
     evaluate = _make_spectrum_evaluator(
@@ -512,15 +522,19 @@ def reconstruct_am_projections(
         projection_backend=projection_backend,
         projection_batch_size=projection_batch_size,
     )
+    reconstruct = make_backprojector(
+        projections.low_log_zhw.shape[1], projections.theta_deg,
+        backend=projection_backend if backprojection_backend is None else backprojection_backend,
+    )
     return _reconstruct_am_projections(
         projections, output_shape=output_shape, zeff_clip=zeff_clip,
-        rhoe_clip=rhoe_clip, evaluate=evaluate, project=project,
+        rhoe_clip=rhoe_clip, evaluate=evaluate, project=project, reconstruct=reconstruct,
     )
 
 
 def _reconstruct_am_projections(
     projections, *, output_shape, zeff_clip=None, rhoe_clip=None, evaluate,
-    project=None,
+    project=None, reconstruct=None, stage_timings=None,
 ):
     h, w = (int(output_shape[0]), int(output_shape[1]))
     if h <= 0 or w <= 0:
@@ -530,6 +544,9 @@ def _reconstruct_am_projections(
     z_depth = low_zhw.shape[0]
     config = projections.config
     theta = projections.theta_deg
+    if reconstruct is None:
+        reconstruct = make_backprojector(low_zhw.shape[1], theta)
+    backprojection_s = 0.0
     zeff_limit = (
         float(zeff_clip)
         if zeff_clip is not None
@@ -557,9 +574,12 @@ def _reconstruct_am_projections(
             lut=decomposition_lut,
             config=config,
         )
+        stage_started = perf_counter()
+        basis_images = reconstruct(np.stack((sino_a1_rec, sino_a2_rec)))
+        backprojection_s += perf_counter() - stage_started
         recon_a1 = np.clip(
             _match_reconstruction_shape(
-                iradon(sino_a1_rec, theta=theta, filter_name="ramp", circle=False),
+                basis_images[0],
                 (h, w),
             )
             / config.pixel_size_cm,
@@ -568,7 +588,7 @@ def _reconstruct_am_projections(
         )
         recon_a2 = np.clip(
             _match_reconstruction_shape(
-                iradon(sino_a2_rec, theta=theta, filter_name="ramp", circle=False),
+                basis_images[1],
                 (h, w),
             )
             / config.pixel_size_cm,
@@ -586,6 +606,8 @@ def _reconstruct_am_projections(
             config.pixel_size_cm,
             (h, w),
             project=project,
+            reconstruct=reconstruct,
+            stage_timings=stage_timings,
         )
     recovered_labels, zeff_regularized, rhoe_regularized = (
         regularize_recovered_material_properties(zeff_rec, rhoe_rec)
@@ -600,6 +622,9 @@ def _reconstruct_am_projections(
     confidence = np.clip(confidence * disagreement_penalty, 0.0, 1.0).astype(
         np.float32
     )
+    if stage_timings is not None:
+        stage_timings["basis_backprojection_s"] = backprojection_s
+        stage_timings["backprojection_s"] = backprojection_s + stage_timings.get("quality_backprojection_s", 0.0)
     return AMResult(
         zeff_recovered=zeff_rec,
         rhoe_recovered=rhoe_rec,
@@ -631,6 +656,10 @@ def simulate_am_volume(
     batch_size: int = 4096,
     projection_backend: str = "cpu",
     projection_batch_size: int = 8,
+    backprojection_backend: str | None = None,
+    sample_file: str | None = None,
+    voxel_spacing_mm: tuple[float, float, float] | None = None,
+    action_name: str | None = None,
 ) -> AMResult:
     """Simulate and reconstruct a property volume through the AM pipeline.
 
@@ -645,8 +674,10 @@ def simulate_am_volume(
     ``projection_backend="cuda"`` independently selects optional CUDA Radon
     projection for acquisition and quality maps. One projector reuses geometry
     across slices and dtypes; ``projection_batch_size`` bounds angles processed
-    together. Both backends default to CPU, and all backprojection stays on CPU.
+    together. Backprojection follows projection_backend unless overridden;
+    GPU selection accelerates basis and quality-map backprojection as well.
     """
+    started = perf_counter()
     volume = np.asarray(vol)
     if volume.ndim != 4 or volume.shape[-1] != 2:
         raise ValueError("AM volume must have shape (Z, H, W, 2)")
@@ -681,9 +712,18 @@ def simulate_am_volume(
         (h, w), acquisition.theta_deg, projection_backend=projection_backend,
         projection_batch_size=projection_batch_size,
     )
+    backprojection_backend = projection_backend if backprojection_backend is None else backprojection_backend
+    reconstruct = make_backprojector(
+        int(np.ceil(np.sqrt(2) * max(h, w))), acquisition.theta_deg,
+        backend=backprojection_backend,
+    )
+    stage_started = perf_counter()
     projections = _simulate_am_projections(
         volume, acquisition, evaluate=evaluate, project=project
     )
+    acquisition_s = perf_counter() - stage_started
+    stage_started = perf_counter()
+    stage_timings = {}
     zeff_gt = volume[..., 0].astype(np.float32)
     rhoe_gt = volume[..., 1].astype(np.float32)
     result = _reconstruct_am_projections(
@@ -693,7 +733,10 @@ def simulate_am_volume(
         rhoe_clip=float(rhoe_gt.max()) * 1.5 if rhoe_gt.max() > 0 else 1.0,
         evaluate=evaluate,
         project=project,
+        reconstruct=reconstruct,
+        stage_timings=stage_timings,
     )
+    reconstruction_s = perf_counter() - stage_started
     result.update(
         zeff_ground_truth=zeff_gt,
         rhoe_ground_truth=rhoe_gt,
@@ -702,6 +745,29 @@ def simulate_am_volume(
         ).astype(np.float32),
     )
     result.has_ground_truth = True
+    result.run_metrics = simulation_record(
+        started, model="am", shape_zhw=zeff_gt.shape,
+        num_angles=acquisition.num_angles, projection_backend=projection_backend,
+        spectrum_backend=backend, sample_file=sample_file,
+        voxel_spacing_mm=voxel_spacing_mm,
+        pixel_size_cm=acquisition.pixel_size_cm,
+        projection_batch_size=projection_batch_size, spectrum_batch_size=batch_size,
+        photon_count=acquisition.photon_count, random_seed=acquisition.random_seed,
+        low_spectrum=acquisition.low_spectrum.label,
+        high_spectrum=acquisition.high_spectrum.label,
+        source_kind=acquisition.source_kind,
+        backprojection_backend=backprojection_backend,
+        acquisition_s=acquisition_s, reconstruction_s=reconstruction_s,
+        **stage_timings,
+        action_name=action_name,
+    )
+    metrics_started = perf_counter()
+    result.reconstruction_metrics = am_reconstruction_metrics(result)
+    result.run_metrics["metrics_elapsed_s"] = perf_counter() - metrics_started
+    result.run_metrics["reconstruction_metrics"] = result.reconstruction_metrics
+    # Verbose JSON logging can be restored for detailed timing studies:
+    # print_simulation_record(result.run_metrics)
+    print_simulation_timing(result.run_metrics)
     return result
 
 

@@ -9,6 +9,7 @@ benchmarks. No packages are installed and no system CUDA compiler is needed.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import gc
 import json
 import platform
@@ -77,7 +78,8 @@ def timed(call, torch=None):
     if torch is not None:
         torch.cuda.synchronize()
     started = perf_counter()
-    result = call()
+    with redirect_stdout(sys.stderr):
+        result = call()
     if torch is not None:
         torch.cuda.synchronize()
     return result, perf_counter() - started

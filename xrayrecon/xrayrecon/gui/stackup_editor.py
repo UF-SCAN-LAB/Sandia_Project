@@ -98,8 +98,8 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
         self.processorCombo.setCurrentIndex(0)
         self.processorCombo.setToolTip(
             "Processor for CT forward projection and Alvarez-Macovski spectrum "
-            "and projection calculations. CT filtered backprojection remains "
-            "on CPU. GPU requires CUDA-enabled PyTorch and fails explicitly "
+            "and projection calculations, plus CT/AM filtered backprojection. "
+            "GPU requires CUDA-enabled PyTorch with NVRTC and fails explicitly "
             "if unavailable."
         )
 

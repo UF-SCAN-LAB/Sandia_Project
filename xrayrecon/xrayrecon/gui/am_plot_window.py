@@ -6,6 +6,7 @@ from matplotlib.figure import Figure
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from ..materials import MATERIALS_DB, MATERIAL_COLORS
+from ..reconstruction_metrics import reconstruction_fidelity
 
 
 class AMAnalysisPanel(QtWidgets.QWidget):
@@ -23,7 +24,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self.result: dict | None = None
 
-        self.backBtn = QtWidgets.QPushButton("Back to volume workspace")
+        self.backBtn = QtWidgets.QPushButton("Return to Viewer")
         self.backBtn.clicked.connect(self.sigCloseRequested)
         self.modeCombo = QtWidgets.QComboBox()
         self.modeCombo.addItem("Calibrated quantitative", "calibrated")
@@ -263,6 +264,16 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             f"median normalized projection residual {np.median(residual):.3f}. "
         )
         if zeff_gt is not None and rhoe_gt is not None:
+            fidelity_text = []
+            for name, reference, key in (("Z-effective", zeff_gt, z_key), ("Electron density", rhoe_gt, r_key)):
+                metrics = reconstruction_fidelity(
+                    reference[index], result[key][index],
+                    data_range=float(reference.max()) - float(reference.min()),
+                )
+                snr = "unavailable" if metrics["snr_db"] is None else f"{metrics['snr_db']:.2f} dB"
+                ssi = "unavailable" if metrics["ssi"] is None else f"{metrics['ssi']:.4f}"
+                fidelity_text.append(f"{name}: SNR {snr}, SSI (SSIM) {ssi}")
+            summary += "Full-slice fidelity: " + "; ".join(fidelity_text) + ". "
             mask = rhoe_gt[index] > 0.01
             if np.any(mask):
                 z_error = np.median(
@@ -297,6 +308,8 @@ class AMAnalysisPanel(QtWidgets.QWidget):
                         f" Empirical interval coverage: Z-effective {np.mean(z_covered):.1%}; "
                         f"electron density {np.mean(r_covered):.1%}."
                     )
+        else:
+            summary += "SNR and SSI unavailable: no ground-truth reference."
         self.metricSummary.setText(summary)
 
 

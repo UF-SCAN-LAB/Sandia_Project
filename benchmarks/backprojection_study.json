@@ -1,0 +1,871 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "torch": "2.14.0+cu130",
+    "cuda": "13.0",
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "repeats": 5,
+    "kernel": "NVRTC one-thread-per-pixel, CUDA FFT ramp filter"
+  },
+  "backprojection": [
+    {
+      "first_host_seconds": {
+        "cpu": 0.007875700001022778,
+        "cuda": 0.15516130000469275
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.007724700000835583,
+            0.007193500001449138,
+            0.007167799994931556,
+            0.007041899996693246,
+            0.007761000000755303
+          ],
+          "median": 0.007193500001449138,
+          "min": 0.007041899996693246,
+          "max": 0.007761000000755303,
+          "population_stddev": 0.0003026804099952454,
+          "p25": 0.007167799994931556,
+          "p75": 0.007724700000835583
+        },
+        "cuda": {
+          "samples": [
+            0.0010748999993666075,
+            0.0009372999993502162,
+            0.0008252999978139997,
+            0.00090970000019297,
+            0.0007994000043254346
+          ],
+          "median": 0.00090970000019297,
+          "min": 0.0007994000043254346,
+          "max": 0.0010748999993666075,
+          "population_stddev": 9.730521791811834e-05,
+          "p25": 0.0008252999978139997,
+          "p75": 0.0009372999993502162
+        }
+      },
+      "shape": [
+        96,
+        128
+      ],
+      "angles": 64,
+      "dtype": "float32",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          0.2333119958639145,
+          0.2322559952735901,
+          0.23161600530147552,
+          0.2314240038394928,
+          0.23136000335216522
+        ],
+        "median": 0.23161600530147552,
+        "min": 0.23136000335216522,
+        "max": 0.2333119958639145,
+        "population_stddev": 0.0007315027256480207,
+        "p25": 0.2314240038394928,
+        "p75": 0.2322559952735901
+      },
+      "numerical_errors": {
+        "max_abs": 5.0067901611328125e-06,
+        "rmse": 5.831226789943206e-07,
+        "normalized_max": 4.0790789672782114e-06,
+        "reference_scale": 1.2274315357208252,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 7.9075519401156615
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 0.006572899997991044,
+        "cuda": 0.02259500000218395
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.006803000003856141,
+            0.0065411999967182055,
+            0.006533699997817166,
+            0.006823899995652027,
+            0.006641799998760689
+          ],
+          "median": 0.006641799998760689,
+          "min": 0.006533699997817166,
+          "max": 0.006823899995652027,
+          "population_stddev": 0.0001243610784605331,
+          "p25": 0.0065411999967182055,
+          "p75": 0.006803000003856141
+        },
+        "cuda": {
+          "samples": [
+            0.0010151000024052337,
+            0.0009637999974074773,
+            0.0008278000022983178,
+            0.001085200005036313,
+            0.0009171000056085177
+          ],
+          "median": 0.0009637999974074773,
+          "min": 0.0008278000022983178,
+          "max": 0.001085200005036313,
+          "population_stddev": 8.720841745111451e-05,
+          "p25": 0.0009171000056085177,
+          "p75": 0.0010151000024052337
+        }
+      },
+      "shape": [
+        96,
+        128
+      ],
+      "angles": 64,
+      "dtype": "float64",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          0.27881601452827454,
+          0.2723200023174286,
+          0.27107200026512146,
+          0.27244800329208374,
+          0.2794240117073059
+        ],
+        "median": 0.27244800329208374,
+        "min": 0.27107200026512146,
+        "max": 0.2794240117073059,
+        "population_stddev": 0.0035521496301744986,
+        "p25": 0.2723200023174286,
+        "p75": 0.27881601452827454
+      },
+      "numerical_errors": {
+        "max_abs": 1.071365218763276e-14,
+        "rmse": 2.55928301898634e-15,
+        "normalized_max": 8.728500677755313e-15,
+        "reference_scale": 1.2274332767065745,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 6.891263764916421
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 0.3247218000033172,
+        "cuda": 0.15520870000182185
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.3220184999954654,
+            0.32395769999857293,
+            0.323786699998891,
+            0.32647439999709604,
+            0.32869310000387486
+          ],
+          "median": 0.32395769999857293,
+          "min": 0.3220184999954654,
+          "max": 0.32869310000387486,
+          "population_stddev": 0.002334939083599115,
+          "p25": 0.323786699998891,
+          "p75": 0.32647439999709604
+        },
+        "cuda": {
+          "samples": [
+            0.006296200001088437,
+            0.006259300003875978,
+            0.005669300000590738,
+            0.00609749999421183,
+            0.005526699998881668
+          ],
+          "median": 0.00609749999421183,
+          "min": 0.005526699998881668,
+          "max": 0.006296200001088437,
+          "population_stddev": 0.00031409946262687456,
+          "p25": 0.005669300000590738,
+          "p75": 0.006259300003875978
+        }
+      },
+      "shape": [
+        256,
+        384
+      ],
+      "angles": 180,
+      "dtype": "float32",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          4.7076802253723145,
+          4.661375999450684,
+          4.860127925872803,
+          4.6332478523254395,
+          4.643551826477051
+        ],
+        "median": 4.661375999450684,
+        "min": 4.6332478523254395,
+        "max": 4.860127925872803,
+        "population_stddev": 0.08345877568557945,
+        "p25": 4.643551826477051,
+        "p75": 4.7076802253723145
+      },
+      "numerical_errors": {
+        "max_abs": 1.1473894119262695e-05,
+        "rmse": 7.817957307552995e-07,
+        "normalized_max": 8.845180575854799e-06,
+        "reference_scale": 1.2971916198730469,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 53.129594146141216
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 0.311204199999338,
+        "cuda": 0.10366510000312701
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.31731939999735914,
+            0.31672299999627285,
+            0.31720969999878434,
+            0.3207150999951409,
+            0.31888859999889974
+          ],
+          "median": 0.31731939999735914,
+          "min": 0.31672299999627285,
+          "max": 0.3207150999951409,
+          "population_stddev": 0.0014651565570498065,
+          "p25": 0.31720969999878434,
+          "p75": 0.31888859999889974
+        },
+        "cuda": {
+          "samples": [
+            0.005809500005852897,
+            0.0059012999990954995,
+            0.005308400002832059,
+            0.006025800001225434,
+            0.005837299999257084
+          ],
+          "median": 0.005837299999257084,
+          "min": 0.005308400002832059,
+          "max": 0.006025800001225434,
+          "population_stddev": 0.00024561301676844345,
+          "p25": 0.005809500005852897,
+          "p75": 0.0059012999990954995
+        }
+      },
+      "shape": [
+        256,
+        384
+      ],
+      "angles": 180,
+      "dtype": "float64",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          4.238239765167236,
+          4.222239971160889,
+          4.431583881378174,
+          5.300704002380371,
+          4.2267842292785645
+        ],
+        "median": 4.238239765167236,
+        "min": 4.222239971160889,
+        "max": 5.300704002380371,
+        "population_stddev": 0.4158916193573575,
+        "p25": 4.2267842292785645,
+        "p75": 4.431583881378174
+      },
+      "numerical_errors": {
+        "max_abs": 3.008704396734174e-14,
+        "rmse": 6.205783902493441e-15,
+        "normalized_max": 2.3194022780631684e-14,
+        "reference_scale": 1.297189549734603,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 54.360646195628895
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 0.5857163999971817,
+        "cuda": 0.04873720000614412
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.5804967999938526,
+            0.5816001999992295,
+            0.5822692000001553,
+            0.5743683000036981,
+            0.5760872999962885
+          ],
+          "median": 0.5804967999938526,
+          "min": 0.5743683000036981,
+          "max": 0.5822692000001553,
+          "population_stddev": 0.0031502137710792437,
+          "p25": 0.5760872999962885,
+          "p75": 0.5816001999992295
+        },
+        "cuda": {
+          "samples": [
+            0.04785699999774806,
+            0.07778289999987464,
+            0.08212790000106907,
+            0.04507010000088485,
+            0.045346899998548906
+          ],
+          "median": 0.04785699999774806,
+          "min": 0.04507010000088485,
+          "max": 0.08212790000106907,
+          "population_stddev": 0.016675036451799966,
+          "p25": 0.045346899998548906,
+          "p75": 0.07778289999987464
+        }
+      },
+      "shape": [
+        512,
+        512
+      ],
+      "angles": 180,
+      "dtype": "float32",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          36.21120071411133,
+          35.49168014526367,
+          35.691585540771484,
+          35.8919677734375,
+          35.77849578857422
+        ],
+        "median": 35.77849578857422,
+        "min": 35.49168014526367,
+        "max": 36.21120071411133,
+        "population_stddev": 0.23831834908081712,
+        "p25": 35.691585540771484,
+        "p75": 35.8919677734375
+      },
+      "numerical_errors": {
+        "max_abs": 1.3530254364013672e-05,
+        "rmse": 1.3198811783207476e-06,
+        "normalized_max": 9.110611655161342e-06,
+        "reference_scale": 1.4851093292236328,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 12.129820089457514
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 0.5622121000051266,
+        "cuda": 0.04079609999462264
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.5717236999989836,
+            0.5689804000066943,
+            0.5484980000037467,
+            0.5649196000013035,
+            0.5717890999949304
+          ],
+          "median": 0.5689804000066943,
+          "min": 0.5484980000037467,
+          "max": 0.5717890999949304,
+          "population_stddev": 0.00870976648753411,
+          "p25": 0.5649196000013035,
+          "p75": 0.5717236999989836
+        },
+        "cuda": {
+          "samples": [
+            0.04089640000165673,
+            0.06628649999765912,
+            0.06776730000274256,
+            0.06554859999596374,
+            0.06964629999856697
+          ],
+          "median": 0.06628649999765912,
+          "min": 0.04089640000165673,
+          "max": 0.06964629999856697,
+          "population_stddev": 0.010658818126220911,
+          "p25": 0.06554859999596374,
+          "p75": 0.06776730000274256
+        }
+      },
+      "shape": [
+        512,
+        512
+      ],
+      "angles": 180,
+      "dtype": "float64",
+      "cuda_fft_and_kernel_ms": {
+        "samples": [
+          50.07574462890625,
+          47.94313430786133,
+          41.80204772949219,
+          28.257280349731445,
+          28.07756805419922
+        ],
+        "median": 41.80204772949219,
+        "min": 28.07756805419922,
+        "max": 50.07574462890625,
+        "population_stddev": 9.433362324260477,
+        "p25": 28.257280349731445,
+        "p75": 47.94313430786133
+      },
+      "numerical_errors": {
+        "max_abs": 7.560618797697316e-14,
+        "rmse": 1.583920132590971e-14,
+        "normalized_max": 5.0909293038469706e-14,
+        "reference_scale": 1.485115653046708,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true,
+      "median_speedup": 8.583654288984748
+    }
+  ],
+  "workflow": [
+    {
+      "first_host_seconds": {
+        "cpu": 0.08999519999633776,
+        "partial_gpu": 0.09486910000123316,
+        "gpu": 0.03134860000136541
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            0.08492899999691872,
+            0.08276779999869177,
+            0.08464579999417765,
+            0.08392729999468429,
+            0.08533019999595126
+          ],
+          "median": 0.08464579999417765,
+          "min": 0.08276779999869177,
+          "max": 0.08533019999595126,
+          "population_stddev": 0.0009012290275518307,
+          "p25": 0.08392729999468429,
+          "p75": 0.08492899999691872
+        },
+        "partial_gpu": {
+          "samples": [
+            0.039187299997138325,
+            0.04350009999325266,
+            0.04054899999755435,
+            0.04110270000091987,
+            0.03966819999914151
+          ],
+          "median": 0.04054899999755435,
+          "min": 0.039187299997138325,
+          "max": 0.04350009999325266,
+          "population_stddev": 0.001505119938646484,
+          "p25": 0.03966819999914151,
+          "p75": 0.04110270000091987
+        },
+        "gpu": {
+          "samples": [
+            0.02767469999525929,
+            0.028081500000553206,
+            0.025883099995553493,
+            0.02980379999644356,
+            0.025195200003508944
+          ],
+          "median": 0.02767469999525929,
+          "min": 0.025195200003508944,
+          "max": 0.02980379999644356,
+          "population_stddev": 0.001640373130102554,
+          "p25": 0.025883099995553493,
+          "p75": 0.028081500000553206
+        }
+      },
+      "model": "ct",
+      "shape_zhw": [
+        2,
+        96,
+        128
+      ],
+      "angles": 64,
+      "sample_file": "synthetic_FR4_Cu_Tin",
+      "voxel_spacing_mm_xyz": [
+        0.1,
+        0.1,
+        0.05
+      ],
+      "gpu_backprojection_speedup": 1.4652010682862124,
+      "total_cpu_to_gpu_speedup": 3.0585986481760448,
+      "numerical_errors": {
+        "max_abs": 0.0008544921875,
+        "rmse": 0.0001300550025270112,
+        "normalized_max": 3.017447528203974e-06,
+        "reference_scale": 283.18377685546875,
+        "near_zero_count": 0,
+        "near_zero_max_abs": 0.0
+      },
+      "numerical_gate_pass": true
+    },
+    {
+      "first_host_seconds": {
+        "cpu": 1.2016298999951687,
+        "partial_gpu": 3.750801100002718,
+        "gpu": 0.6257767999995849
+      },
+      "warm_host_seconds": {
+        "cpu": {
+          "samples": [
+            1.0786025999987032,
+            1.0615086999969208,
+            1.0646482999945874,
+            1.075619099996402,
+            1.1013611999951536
+          ],
+          "median": 1.075619099996402,
+          "min": 1.0615086999969208,
+          "max": 1.1013611999951536,
+          "population_stddev": 0.014059605223212965,
+          "p25": 1.0646482999945874,
+          "p75": 1.0786025999987032
+        },
+        "partial_gpu": {
+          "samples": [
+            0.6165402999977232,
+            0.7247157000019797,
+            0.8291510000053677,
+            2.2757873000009567,
+            0.6872294999993755
+          ],
+          "median": 0.7247157000019797,
+          "min": 0.6165402999977232,
+          "max": 2.2757873000009567,
+          "population_stddev": 0.6283168637850169,
+          "p25": 0.6872294999993755,
+          "p75": 0.8291510000053677
+        },
+        "gpu": {
+          "samples": [
+            0.589802000002237,
+            0.8884857000011834,
+            0.8864621999964584,
+            0.8612162999997963,
+            0.7008098999940557
+          ],
+          "median": 0.8612162999997963,
+          "min": 0.589802000002237,
+          "max": 0.8884857000011834,
+          "population_stddev": 0.12000199477876626,
+          "p25": 0.7008098999940557,
+          "p75": 0.8864621999964584
+        }
+      },
+      "model": "am",
+      "shape_zhw": [
+        2,
+        96,
+        128
+      ],
+      "angles": 64,
+      "sample_file": "synthetic_FR4_Cu_Tin",
+      "voxel_spacing_mm_xyz": [
+        0.1,
+        0.1,
+        0.05
+      ],
+      "gpu_backprojection_speedup": 0.8415025354282671,
+      "total_cpu_to_gpu_speedup": 1.2489534858973945,
+      "scientific_gate": {
+        "pass_gate": true,
+        "materials": [
+          {
+            "material": "COPPER",
+            "interior_voxels": 960,
+            "fields": {
+              "zeff_recovered": {
+                "cpu_median": 29.013248443603516,
+                "cuda_median": 29.013259887695312,
+                "drift_over_truth": 3.9462385506465517e-07,
+                "gate_pass": true
+              },
+              "rhoe_recovered": {
+                "cpu_median": 7.381336212158203,
+                "cuda_median": 7.381321430206299,
+                "drift_over_truth": 2.0029745127773543e-06,
+                "gate_pass": true
+              }
+            }
+          },
+          {
+            "material": "FR4",
+            "interior_voxels": 9208,
+            "fields": {
+              "zeff_recovered": {
+                "cpu_median": 0.0,
+                "cuda_median": 0.0,
+                "drift_over_truth": 0.0,
+                "gate_pass": true
+              },
+              "rhoe_recovered": {
+                "cpu_median": 1.7000610828399658,
+                "cuda_median": 1.7000614404678345,
+                "drift_over_truth": 2.1036933450137867e-07,
+                "gate_pass": true
+              }
+            }
+          },
+          {
+            "material": "TIN",
+            "interior_voxels": 792,
+            "fields": {
+              "zeff_recovered": {
+                "cpu_median": 50.003082275390625,
+                "cuda_median": 50.00306701660156,
+                "drift_over_truth": 3.0517578125e-07,
+                "gate_pass": true
+              },
+              "rhoe_recovered": {
+                "cpu_median": 5.564097881317139,
+                "cuda_median": 5.5640950202941895,
+                "drift_over_truth": 5.145724728810702e-07,
+                "gate_pass": true
+              }
+            }
+          }
+        ],
+        "interior_voxels": 10960,
+        "cpu_interior_accuracy": 0.9972627737226277,
+        "cuda_interior_accuracy": 0.9972627737226277,
+        "classification_deterioration": 0.0,
+        "material_median_drift_budget": 0.005,
+        "classification_deterioration_budget": 0.005
+      },
+      "last_run_metrics": {
+        "cpu": {
+          "model": "am",
+          "status": "complete",
+          "elapsed_s": 1.097126799999387,
+          "timing_scope": "simulation_including_setup_and_transfers",
+          "sample_file": "synthetic_FR4_Cu_Tin",
+          "shape_zhw": [
+            2,
+            96,
+            128
+          ],
+          "voxel_spacing_mm_xyz": [
+            0.1,
+            0.1,
+            0.05
+          ],
+          "num_angles": 64,
+          "processor": "cpu",
+          "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+          "gpu": null,
+          "projection_backend": "cpu",
+          "spectrum_backend": "cpu",
+          "backprojection_backend": "cpu",
+          "pixel_size_cm": 0.01,
+          "projection_batch_size": 8,
+          "spectrum_batch_size": 4096,
+          "photon_count": null,
+          "random_seed": null,
+          "low_spectrum": "industrial-low-160kVp",
+          "high_spectrum": "industrial-high-320kVp",
+          "source_kind": "simulated",
+          "acquisition_s": 0.2615894000045955,
+          "reconstruction_s": 0.835289599999669,
+          "quality_backprojection_s": 0.013518599997041747,
+          "basis_backprojection_s": 0.02696760000253562,
+          "backprojection_s": 0.040486199999577366,
+          "metrics_elapsed_s": 0.004073700001754332,
+          "reconstruction_metrics": {
+            "raw": {
+              "zeff": {
+                "snr_db": -1.8145791563147995,
+                "ssi": 0.1444544771912341,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.325615712237596,
+                "ssi": 0.6755275830130161,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            },
+            "regularized": {
+              "zeff": {
+                "snr_db": 16.59093354041758,
+                "ssi": 0.9668544658052037,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.653227287628372,
+                "ssi": 0.9619980569111516,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            }
+          }
+        },
+        "partial_gpu": {
+          "model": "am",
+          "status": "complete",
+          "elapsed_s": 0.6828428000007989,
+          "timing_scope": "simulation_including_setup_and_transfers",
+          "sample_file": "synthetic_FR4_Cu_Tin",
+          "shape_zhw": [
+            2,
+            96,
+            128
+          ],
+          "voxel_spacing_mm_xyz": [
+            0.1,
+            0.1,
+            0.05
+          ],
+          "num_angles": 64,
+          "processor": "cuda",
+          "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+          "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "projection_backend": "cuda",
+          "spectrum_backend": "cuda",
+          "backprojection_backend": "cpu",
+          "pixel_size_cm": 0.01,
+          "projection_batch_size": 8,
+          "spectrum_batch_size": 4096,
+          "photon_count": null,
+          "random_seed": null,
+          "low_spectrum": "industrial-low-160kVp",
+          "high_spectrum": "industrial-high-320kVp",
+          "source_kind": "simulated",
+          "acquisition_s": 0.0408674999998766,
+          "reconstruction_s": 0.6399649999948451,
+          "quality_backprojection_s": 0.014165599997795653,
+          "basis_backprojection_s": 0.026796400001330767,
+          "backprojection_s": 0.04096199999912642,
+          "metrics_elapsed_s": 0.004186300000583287,
+          "reconstruction_metrics": {
+            "raw": {
+              "zeff": {
+                "snr_db": -1.8145769727766226,
+                "ssi": 0.1444544993480859,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.325617599776088,
+                "ssi": 0.6755278561701281,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            },
+            "regularized": {
+              "zeff": {
+                "snr_db": 16.59093354041758,
+                "ssi": 0.9668544658052037,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.653227287628372,
+                "ssi": 0.9619980569111516,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            }
+          }
+        },
+        "gpu": {
+          "model": "am",
+          "status": "complete",
+          "elapsed_s": 0.6962648000044283,
+          "timing_scope": "simulation_including_setup_and_transfers",
+          "sample_file": "synthetic_FR4_Cu_Tin",
+          "shape_zhw": [
+            2,
+            96,
+            128
+          ],
+          "voxel_spacing_mm_xyz": [
+            0.1,
+            0.1,
+            0.05
+          ],
+          "num_angles": 64,
+          "processor": "cuda",
+          "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+          "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "projection_backend": "cuda",
+          "spectrum_backend": "cuda",
+          "backprojection_backend": "cuda",
+          "pixel_size_cm": 0.01,
+          "projection_batch_size": 8,
+          "spectrum_batch_size": 4096,
+          "photon_count": null,
+          "random_seed": null,
+          "low_spectrum": "industrial-low-160kVp",
+          "high_spectrum": "industrial-high-320kVp",
+          "source_kind": "simulated",
+          "acquisition_s": 0.05705110000417335,
+          "reconstruction_s": 0.6366639000043506,
+          "quality_backprojection_s": 0.0034527000025263987,
+          "basis_backprojection_s": 0.0065450000038254075,
+          "backprojection_s": 0.009997700006351806,
+          "metrics_elapsed_s": 0.004351300005509984,
+          "reconstruction_metrics": {
+            "raw": {
+              "zeff": {
+                "snr_db": -1.8145769727766226,
+                "ssi": 0.1444544993480859,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.325617599776088,
+                "ssi": 0.6755278561701281,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            },
+            "regularized": {
+              "zeff": {
+                "snr_db": 16.59093354041758,
+                "ssi": 0.9668544658052037,
+                "ssi_status": "available",
+                "ssi_data_range": 43.5,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              },
+              "rhoe": {
+                "snr_db": 20.653227287628372,
+                "ssi": 0.9619980569111516,
+                "ssi_status": "available",
+                "ssi_data_range": 7.3790001143934205,
+                "ssi_window_size": 7,
+                "scope": "all_voxels_including_background_and_boundaries"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

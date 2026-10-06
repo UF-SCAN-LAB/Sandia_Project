@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from time import perf_counter
+
 import numpy as np
-from skimage.transform import iradon, radon
+from skimage.transform import radon
+
+from .simulation_metrics import print_simulation_timing, simulation_record
+from .backprojection import make_backprojector
 
 
 def _match_reconstruction_shape(
@@ -33,6 +38,10 @@ def simulate_ct_volume(
     *,
     projection_backend: str = "cpu",
     projection_batch_size: int = 8,
+    backprojection_backend: str | None = None,
+    sample_file: str | None = None,
+    voxel_spacing_mm: tuple[float, float, float] | None = None,
+    action_name: str | None = None,
 ) -> np.ndarray:
     """Simulate an FBP CT reconstruction of a Voxelizer-produced volume.
 
@@ -52,16 +61,24 @@ def simulate_ct_volume(
     so the result is center-cropped/padded back to (H, W).
 
     ``projection_backend="cuda"`` uses the optional CUDA Radon projector for
-    the forward projection. Filtered backprojection remains on CPU. Explicit
+    the forward projection. Backprojection follows that backend by default;
+    pass ``backprojection_backend="cpu"`` to compare the previous partial-GPU
+    workflow. Explicit
     CUDA selection raises if PyTorch/CUDA is unavailable and never falls back.
 
     Returns a (Z, H, W) float32 volume, ready to feed into the same real-data
     code path as loadCubeFromFile/loadEDData.
     """
+    started = perf_counter()
     z_depth, h, w, _ = vol.shape
     if num_angles is None:
         num_angles = max(h, w)
     theta = np.linspace(0.0, 180.0, num_angles, endpoint=False)
+    backprojection_backend = projection_backend if backprojection_backend is None else backprojection_backend
+    reconstruct = make_backprojector(
+        int(np.ceil(np.sqrt(2) * max(h, w))), theta,
+        backend=backprojection_backend,
+    )
 
     if projection_backend == "cpu":
         projector = None
@@ -75,14 +92,29 @@ def simulate_ct_volume(
         raise ValueError("projection_backend must be 'cpu' or 'cuda'")
 
     out = np.zeros((z_depth, h, w), dtype=np.float32)
+    projection_s = backprojection_s = 0.0
     for z in range(z_depth):
         atten = (vol[z, :, :, 0] * vol[z, :, :, 1]).astype(np.float32)
+        stage_started = perf_counter()
         if projector is None:
             sinogram = radon(atten, theta=theta, circle=False)
         else:
             sinogram = projector.project(atten[None])[0]
-        reconstruction = iradon(
-            sinogram, theta=theta, filter_name="ramp", circle=False
-        )
+        projection_s += perf_counter() - stage_started
+        stage_started = perf_counter()
+        reconstruction = reconstruct(sinogram[None])[0]
+        backprojection_s += perf_counter() - stage_started
         out[z] = _match_reconstruction_shape(reconstruction, (h, w)).astype(np.float32)
+    record = simulation_record(
+        started, model="ct", shape_zhw=out.shape, num_angles=num_angles,
+        projection_backend=projection_backend, sample_file=sample_file,
+        voxel_spacing_mm=voxel_spacing_mm,
+        projection_batch_size=projection_batch_size,
+        backprojection_backend=backprojection_backend,
+        projection_s=projection_s, backprojection_s=backprojection_s,
+        action_name=action_name,
+    )
+    # Verbose JSON logging can be restored for detailed timing studies:
+    # print_simulation_record(record)
+    print_simulation_timing(record)
     return out

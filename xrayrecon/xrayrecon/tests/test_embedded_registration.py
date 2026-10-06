@@ -134,6 +134,9 @@ def test_stackup_am_cuda_selection_drives_both_backends_and_physical_spacing(
         "pixel_size_cm": 0.025,
         "backend": "cuda",
         "projection_backend": "cuda",
+        "sample_file": str(Path.cwd()),
+        "voxel_spacing_mm": win._gerber_voxel_spacing_mm,
+        "action_name": "AM decomposition",
     }
 
 
@@ -165,6 +168,9 @@ def test_stackup_ct_cuda_selection_drives_projection_backend(qapp, monkeypatch):
     assert captured["kwargs"] == {
         "num_angles": 8,
         "projection_backend": "cuda",
+        "sample_file": str(Path.cwd()),
+        "voxel_spacing_mm": win._gerber_voxel_spacing_mm,
+        "action_name": "Simulate X-ray -> Left Pane",
     }
 
 
@@ -208,9 +214,10 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
     expected_shape = win._showcase_am_volume_zhw2.shape[:3]
     called = {}
 
-    def fake_decomposition(volume, *, config):
+    def fake_decomposition(volume, *, config, action_name):
         called["shape"] = volume.shape
         called["angles"] = config.num_angles
+        called["action_name"] = action_name
         zeff = volume[..., 0].astype(np.float32)
         rhoe = volume[..., 1].astype(np.float32)
         labels = np.moveaxis(win._gerber_material_id_vol_hwz, -1, 0)
@@ -260,7 +267,10 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
 
     win.runPcbShowcaseAM()
 
-    assert called == {"shape": (24, 96, 128, 2), "angles": 64}
+    assert called == {
+        "shape": (24, 96, 128, 2), "angles": 64,
+        "action_name": "Run Showcase Z-effective / Electron Density",
+    }
     assert win._am_result["zeff_regularized"].shape == expected_shape
     assert isinstance(win.amAnalysisPanel, AMAnalysisPanel)
     assert not win.amAnalysisPanel.isWindow()

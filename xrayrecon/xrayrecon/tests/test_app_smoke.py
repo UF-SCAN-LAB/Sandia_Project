@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 from pyqtgraph.Qt import QtWidgets
 
 from xrayrecon.gui.app import MainWin
-from xrayrecon.gui.am_plot_window import AMPlotWindow, MaterialLegendWidget
+from xrayrecon.gui.am_plot_window import AMAnalysisPanel, MaterialLegendWidget
 from xrayrecon.gui.helpers import phantomSpheres
 
 NEW_PHASE2_ACTIONS = (
@@ -70,24 +71,86 @@ def test_view_menu_restores_closed_plot_and_tools_docks(qapp):
     assert not win._plotDock.isHidden()
 
 
-def test_view_menu_regenerates_cached_am_plot(qapp):
-    win = MainWin(dataCube=phantomSpheres())
-    data = np.ones((2, 4, 4), dtype=np.float32)
-    win._am_result = {
+def _cached_am_result():
+    data = np.arange(32, dtype=np.float32).reshape(2, 4, 4) / 32 + 1
+    return {
         "zeff_ground_truth": data * 6,
         "rhoe_ground_truth": data,
         "zeff_recovered": data * 5.5,
         "rhoe_recovered": data * 0.9,
+        "zeff_regularized": data * 5.75,
+        "rhoe_regularized": data * 0.95,
+        "projection_residual": data * 0.01,
+        "confidence": np.ones_like(data),
     }
 
-    win.regenerateAMPlotAction.trigger()
+
+def _cached_am_action(win, menu_name):
+    name = "Regenerate Z_eff / rho_e Plot"
+    if menu_name == "Tools":
+        return win.toolsEditor.rootParameter.child(name).activate
+    menu = next(
+        action.menu() for action in win.menuBar().actions() if action.text() == menu_name
+    )
+    return next(action for action in menu.actions() if action.text() == name).trigger
+
+
+@pytest.mark.parametrize("menu_name", ["Tools", "View"])
+def test_cached_am_action_opens_analysis_and_returns_to_viewer(qapp, monkeypatch, menu_name):
+    win = MainWin(dataCube=phantomSpheres())
+    win._am_result = _cached_am_result()
+    original = {key: value.copy() for key, value in win._am_result.items()}
+    viewer_cube = win.model.dataCube
+    panel = win.amAnalysisPanel
+    open_analysis = _cached_am_action(win, menu_name)
+
+    def unexpected_simulation(*args, **kwargs):
+        pytest.fail("Opening cached analysis must not rerun the decomposition")
+
+    monkeypatch.setattr(win, "_runAMDecomposition", unexpected_simulation)
+    open_analysis()
     qapp.processEvents()
 
-    firstWindow = win._amPlotWindow
-    assert isinstance(firstWindow, AMPlotWindow)
+    assert isinstance(panel, AMAnalysisPanel)
+    assert win._workspaceStack.currentWidget() is panel
+    assert panel.result is win._am_result
+    assert not panel.isWindow()
+    assert not hasattr(win, "_amPlotWindow")
+    assert win.layerPanel.isHidden()
+    assert win._plotDock.isHidden()
+    assert "SNR" in panel.metricSummary.text()
+    assert panel.backBtn.text() == "Return to Viewer"
 
-    win.regenerateAMPlotAction.trigger()
+    panel.backBtn.click()
     qapp.processEvents()
 
-    assert isinstance(win._amPlotWindow, AMPlotWindow)
-    assert win._amPlotWindow is not firstWindow
+    assert win._workspaceStack.currentWidget() is win._mainWorkspacePage
+    assert not win.layerPanel.isHidden()
+    assert not win._plotDock.isHidden()
+    assert win.model.dataCube is viewer_cube
+
+    open_analysis()
+    qapp.processEvents()
+    assert win._workspaceStack.currentWidget() is panel
+    assert win.amAnalysisPanel is panel
+    for key, value in original.items():
+        np.testing.assert_array_equal(win._am_result[key], value)
+    win.close()
+
+
+@pytest.mark.parametrize("menu_name", ["Tools", "View"])
+def test_cached_am_action_without_result_keeps_viewer(qapp, monkeypatch, menu_name):
+    win = MainWin(dataCube=phantomSpheres())
+    messages = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information",
+        lambda parent, title, text: messages.append((title, text)),
+    )
+
+    _cached_am_action(win, menu_name)()
+    qapp.processEvents()
+
+    assert messages == [("No AM Result", "Run an Alvarez-Macovski decomposition first.")]
+    assert win._workspaceStack.currentWidget() is win._mainWorkspacePage
+    assert win.amAnalysisPanel.result is None
+    win.close()

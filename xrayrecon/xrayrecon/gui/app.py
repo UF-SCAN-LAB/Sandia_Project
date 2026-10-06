@@ -24,7 +24,7 @@ from xrayrecon.cubecorrections.rotation import RotateWindow
 from .helpers import FRPgParamDelegate, phantomSpheres
 from .layermodel import LayerModel
 from .layerview import LayerView
-from .am_plot_window import AMAnalysisPanel, AMPlotWindow, MaterialLegendWidget
+from .am_plot_window import AMAnalysisPanel, MaterialLegendWidget
 from .stackup_editor import StackupEditorWindow
 from .spacing_dialog import SpacingDialog
 from .registration import RegistrationPanel
@@ -528,7 +528,7 @@ class MainWin(QtWidgets.QMainWindow):
 
         self.regenerateAMPlotAction = QAction("Regenerate Z_eff / rho_e Plot", self)
         self.regenerateAMPlotAction.setToolTip(
-            "Recreate the Alvarez-Macovski Z_eff / rho_e plot from the cached result."
+            "Open Quantitative AM analysis using the most recent decomposition result."
         )
         self.regenerateAMPlotAction.triggered.connect(self.showCachedAlvarezMacovskiPlot)
 
@@ -720,7 +720,7 @@ class MainWin(QtWidgets.QMainWindow):
             # Rasterize
             # Use high DPI for quality, but keep memory in check? 300 DPI? 
             # Demo used 100 for speed. Let's try 300.
-            rasterizer = PyGerberRasterizer(dpi=300)
+            rasterizer = PyGerberRasterizer(dpi=300, source_name=str(file_path))
             mask = rasterizer.rasterize(content)
             
             if np.max(mask) == 0:
@@ -909,6 +909,9 @@ class MainWin(QtWidgets.QMainWindow):
                 vol,
                 num_angles=preview_angles,
                 projection_backend=processor,
+                sample_file=str(stackup_path),
+                voxel_spacing_mm=self._gerber_voxel_spacing_mm,
+                action_name="Simulate X-ray -> Left Pane",
             )
             sim_hwz = np.moveaxis(sim_zhw, 0, -1)
 
@@ -932,7 +935,8 @@ class MainWin(QtWidgets.QMainWindow):
         )
 
     def _runAMDecomposition(
-        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
+        self, config: StackupConfig, stackup_path: Path, processor: str = "cpu",
+        *, action_name: str = "AM decomposition",
     ) -> dict | None:
         """Voxelize *config* and run the Alvarez-Macovski dual-energy
         decomposition across every slice. Returns None (after showing an
@@ -951,6 +955,9 @@ class MainWin(QtWidgets.QMainWindow):
                 pixel_size_cm=config.resolution_xy / 10.0,
                 backend=processor,
                 projection_backend=processor,
+                sample_file=str(stackup_path),
+                voxel_spacing_mm=self._gerber_voxel_spacing_mm,
+                action_name=action_name,
             )
         except Exception as e:
             import traceback
@@ -966,7 +973,9 @@ class MainWin(QtWidgets.QMainWindow):
     ):
         """Run the Alvarez-Macovski dual-energy decomposition on *config* and
         open the embedded quantitative comparison workspace."""
-        result = self._runAMDecomposition(config, stackup_path, processor)
+        result = self._runAMDecomposition(
+            config, stackup_path, processor, action_name="Show Z_eff / rho_e Plot"
+        )
         if result is None:
             return
         self._am_result = result
@@ -974,7 +983,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._showAMAnalysis()
 
     def showCachedAlvarezMacovskiPlot(self):
-        """Recreate the AM comparison dialog from the most recent result."""
+        """Open the embedded quantitative analysis with the most recent result."""
         if self._am_result is None:
             QtWidgets.QMessageBox.information(
                 self,
@@ -983,27 +992,8 @@ class MainWin(QtWidgets.QMainWindow):
             )
             return
 
-        cached_window = getattr(self, "_amPlotWindow", None)
-        if cached_window is not None:
-            cached_window.close()
-
-        plotWindow = AMPlotWindow(self._am_result, parent=self)
-        self._amPlotWindow = plotWindow
-        try:
-            plotWindow.setAttribute(
-                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
-            )
-        except AttributeError:
-            plotWindow.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-
-        def _forgetPlotWindow():
-            if self._amPlotWindow is plotWindow:
-                self._amPlotWindow = None
-
-        plotWindow.destroyed.connect(_forgetPlotWindow)
-        plotWindow.show()
-        plotWindow.raise_()
-        plotWindow.activateWindow()
+        self.amAnalysisPanel.setResult(self._am_result)
+        self._showAMAnalysis()
 
     def _showAMVolumeIn3D(
         self, config: StackupConfig, stackup_path: Path, processor: str = "cpu"
@@ -1012,7 +1002,9 @@ class MainWin(QtWidgets.QMainWindow):
         stackup and render the recovered volume in the LEFT 3D pane,
         colorized by whichever quantity (Z_eff / rho_e) is currently
         toggled via amColorZeffBtn/amColorRhoeBtn."""
-        result = self._runAMDecomposition(config, stackup_path, processor)
+        result = self._runAMDecomposition(
+            config, stackup_path, processor, action_name="Show AM Volume in 3D"
+        )
         if result is None:
             return
         self._am_result = result
@@ -1191,7 +1183,7 @@ class MainWin(QtWidgets.QMainWindow):
             vox = Voxelizer(resolution_xy=spacing[0], resolution_z=spacing[2])
             vol, material_ids_zhw = vox.voxelize_stackup(stackup, air, return_material_ids=True)
 
-            sim_zhw = simulate_ct_volume(vol)
+            sim_zhw = simulate_ct_volume(vol, action_name="Load Sophisticated PCB Demo (CT)")
             sim_hwz = np.moveaxis(sim_zhw, 0, -1)
             gt_rgba = colorize_material_labels(material_ids_zhw)
 
@@ -1208,7 +1200,7 @@ class MainWin(QtWidgets.QMainWindow):
             self.viewer_3d_right.setRGBADataCube(gt_rgba)
             self.viewer_3d_right.resetCamera()
 
-            self._am_result = simulate_am_volume(vol)
+            self._am_result = simulate_am_volume(vol, action_name="Load Sophisticated PCB Demo (AM)")
             QtWidgets.QMessageBox.information(
                 self, "Sophisticated PCB Demo Loaded",
                 f"Voxelized: {vol.shape[:3]}  |  AM decomposition complete -- "
@@ -1481,6 +1473,7 @@ class MainWin(QtWidgets.QMainWindow):
             raw_result = simulate_am_volume(
                 self._showcase_am_volume_zhw2,
                 config=acquisition,
+                action_name="Run Showcase Z-effective / Electron Density",
             )
             self._am_result = calibration.apply(raw_result)
             self._renderAMVolume()
@@ -1540,6 +1533,7 @@ class MainWin(QtWidgets.QMainWindow):
         volume = material_labels_to_zeff_rhoe(labels)
         training_result = simulate_am_volume(
             volume,
+            action_name="Run Showcase Z-effective / Electron Density (calibration)",
             config=AMAcquisitionConfig.industrial_default(
                 num_angles=96,
                 photon_count=2_000_000,
@@ -1623,7 +1617,13 @@ class MainWin(QtWidgets.QMainWindow):
             img = topItem.image
             if img is not None and 0 <= y < img.shape[0] and 0 <= x < img.shape[1]:
                 val = img[y, x]
-                self.pixelValueLabel.setText(f"Pixel: ({x}, {y}) = {val:.1f}")
+                if np.ndim(val) == 0:
+                    valueText = f"{val:.1f}"
+                else:
+                    channels = np.asarray(val).ravel()
+                    mode = {3: "RGB", 4: "RGBA"}.get(channels.size, "Channels")
+                    valueText = f"{mode} ({', '.join(f'{v:.1f}' for v in channels)})"
+                self.pixelValueLabel.setText(f"Pixel: ({x}, {y}) = {valueText}")
                 return
         self.pixelValueLabel.setText("Pixel: —")
 

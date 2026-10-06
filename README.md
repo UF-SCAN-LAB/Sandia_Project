@@ -55,7 +55,57 @@ The showcase now applies a separately fitted synthetic reference calibration,
 shows nominal 90% uncertainty maps, and labels that provenance explicitly. It
 does not claim measured-scanner validation.
 
+Use **Tools → Regenerate Z_eff / rho_e Plot** to reopen Quantitative AM analysis
+with the most recent decomposition result. The matching View action opens the
+same screen. **Return to Viewer** brings you back to the 3D workspace; reopening
+analysis uses the cached result without running the simulation again.
+
+## Simulation Metrics
+
+CT and AM simulations print one compact terminal line with the button/action
+name, CPU or GPU, total elapsed time and step times. All displayed times are
+truncated to two decimal places in seconds. CT shows projection/backprojection;
+AM shows acquisition, reconstruction (with basis/residual backprojection times),
+and fidelity-metric calculation. The displayed total includes setup, transfers,
+reconstruction and metric calculation; it excludes prior Gerber voxelization
+and display rendering. The verbose JSON print calls are commented out.
+
+GPU selection uses
+CUDA FFT filtering and a custom parallel backprojection kernel for CT and AM,
+including AM residual maps. AM LUT interpolation and regularization remain on
+CPU. First CUDA runs include initialization and runtime compilation costs.
+
+The stackup editor supplies sample and spacing metadata automatically. Direct
+Python calls can pass `sample_file=` and `voxel_spacing_mm=`; unavailable metadata
+is `null`. AM retains the detailed record as `result.run_metrics`, keeping its
+dictionary values exclusively arrays. Sample/settings/device details are retained
+there for studies and are omitted from terminal summaries. No source files or
+metric files are written by simulations.
+
+AM compares raw and material-regularized Z-effective/electron-density volumes
+against the matching synthetic ground truth. `result.reconstruction_metrics`
+retains SNR in dB and SSI (structural similarity, SSIM); the analysis panel shows
+these for the selected slice and display mode, including calibrated outputs.
+Fidelity calculation time is retained as `metrics_elapsed_s`; the detailed
+simulation `elapsed_s` excludes it, while the compact displayed total includes
+it. Metrics include background and boundaries.
+No ground truth means no fidelity claim. SSI uses a reference-only data range,
+without independently normalizing the reconstruction. Constant references and
+images smaller than three pixels per side report unavailable SSI.
+
+For a reproducible before/after timing study:
+```bash
+python -B benchmarks/benchmark_cuda_backprojection.py --repeats 5 --output benchmarks/backprojection_study.json
+```
+This compares CPU, the previous partial GPU workflow, and the GPU workflow with
+backprojection enabled. Direct calls can select `backprojection_backend="cpu"`
+to reproduce the previous workflow; by default it follows `projection_backend`.
+CUDA-enabled PyTorch must include NVRTC; no system CUDA/C++ compiler is needed.
+See [Simulation Metrics and CUDA Backprojection](./xrayrecon/SIMULATION_METRICS.md)
+for definitions, timing scope, algorithm assessment, and measured results.
+
 ## Running Tests
+
 ```bash
 python -m pytest
 ```

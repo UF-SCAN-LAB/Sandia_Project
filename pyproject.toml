@@ -39,6 +39,9 @@ package-dir = {"" = "xrayrecon"}
 where = ["xrayrecon"]
 include = ["xrayrecon*"]
 
+[tool.setuptools.package-data]
+xrayrecon = ["cuda_backprojection.cu"]
+
 [tool.pytest.ini_options]
 testpaths = ["xrayrecon/xrayrecon/tests"]
 addopts = "-ra"

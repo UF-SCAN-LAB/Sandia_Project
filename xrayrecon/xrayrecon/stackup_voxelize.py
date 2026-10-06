@@ -58,6 +58,7 @@ def voxelize_stackup_config(
 
         with open(layer_path, "r") as f:
             content = f.read()
+        rasterizer.source_name = str(layer_path)
         mask = rasterizer.rasterize(content)
         if np.max(mask) == 0:
             raise ValueError(f"Layer '{layer_cfg.name}' produced an empty raster mask.")

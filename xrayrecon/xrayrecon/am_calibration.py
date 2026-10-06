@@ -11,6 +11,7 @@ from scipy.ndimage import binary_erosion
 from scipy.stats import spearmanr
 
 from .alvarez_macovski import AMResult
+from .reconstruction_metrics import am_reconstruction_metrics
 from .materials import (
     MATERIAL_NAMES,
     MATERIALS_DB,
@@ -206,6 +207,7 @@ class AMCalibrationModel:
         calibrated.nominal_coverage = self.nominal_coverage
         calibrated.calibration_compatibility = "verified"
         calibrated.calibration_fingerprint = self.acquisition_fingerprint
+        calibrated.reconstruction_metrics = am_reconstruction_metrics(calibrated)
         return calibrated
 
 

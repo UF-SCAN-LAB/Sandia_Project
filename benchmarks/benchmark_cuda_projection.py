@@ -2,7 +2,8 @@
 
 Run alone: python -B benchmarks/benchmark_cuda_projection.py --repeats 5
 No packages are installed. CPU backprojection and CUDA spectra are fixed in
-both workflow branches. --projector-only is usable before AM integration.
+both projection-study branches to isolate projection speed. The separate
+benchmark_cuda_backprojection.py compares the previous and current workflows.
 CUDA event intervals measure coordinate arithmetic, sampling, row reductions,
 temporary allocation and dispatch gaps; they exclude explicit host transfers
 and geometry setup, and are not a sum of isolated kernel execution times.
@@ -10,6 +11,7 @@ and geometry setup, and are not a sum of isolated kernel execution times.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
 import platform
@@ -46,7 +48,8 @@ def errors(actual, reference):
 def timed(call, torch):
     torch.cuda.synchronize()
     start = perf_counter()
-    value = call()
+    with redirect_stdout(sys.stderr):
+        value = call()
     torch.cuda.synchronize()
     return value, perf_counter()-start
 
@@ -168,9 +171,9 @@ def workflow_case(larger, args, torch):
     volume = material_labels_to_zeff_rhoe(labels)
     print(f'AM {labels.shape}, {angles} angles, CUDA spectra fixed', file=sys.stderr, flush=True)
     def run(backend):
-        return simulate_am_volume(volume, num_angles=angles, backend='cuda', projection_backend=backend, projection_batch_size=args.batch_size)
+        return simulate_am_volume(volume, num_angles=angles, backend='cuda', projection_backend=backend, projection_batch_size=args.batch_size, backprojection_backend='cpu')
     cpu, gpu, report = paired_measure(lambda: run('cpu'), lambda: run('cuda'), args.workflow_repeats, torch)
-    report.update(shape=labels.shape, angles=angles, spectral_backend='cuda', recovery_errors=recovery_errors(gpu, cpu, labels),
+    report.update(shape=labels.shape, angles=angles, spectral_backend='cuda', backprojection_backend='cpu', recovery_errors=recovery_errors(gpu, cpu, labels),
                   scientific_gate=workflow_gate(gpu, cpu, labels),
                   finite_outputs=all(np.isfinite(value).all() for value in gpu.values()))
     return report
