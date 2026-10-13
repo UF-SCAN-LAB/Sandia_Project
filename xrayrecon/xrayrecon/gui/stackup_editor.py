@@ -95,7 +95,17 @@ class StackupEditorWindow(QtWidgets.QMainWindow):
         self.processorCombo.setObjectName("processorCombo")
         self.processorCombo.addItem("CPU", "cpu")
         self.processorCombo.addItem("GPU (CUDA)", "cuda")
-        self.processorCombo.setCurrentIndex(0)
+        # Keep PyTorch optional and choose the default only when creating the
+        # editor, so reopening it preserves the user's processor selection.
+        try:
+            import torch
+
+            defaultProcessor = "cuda" if torch.cuda.is_available() else "cpu"
+        except (ImportError, OSError, RuntimeError, AssertionError):
+            defaultProcessor = "cpu"
+        self.processorCombo.setCurrentIndex(
+            self.processorCombo.findData(defaultProcessor)
+        )
         self.processorCombo.setToolTip(
             "Processor for CT forward projection and Alvarez-Macovski spectrum "
             "and projection calculations, plus CT/AM filtered backprojection. "

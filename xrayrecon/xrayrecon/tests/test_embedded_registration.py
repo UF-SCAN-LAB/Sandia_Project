@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -42,7 +44,31 @@ def _registration_ready_mainwin(monkeypatch):
 
 
 @pytest.mark.gui
-def test_stackup_am_processor_selection_reaches_both_actions(qapp):
+@pytest.mark.parametrize(
+    "availability, expected_processor",
+    [
+        (True, "cuda"),
+        (False, "cpu"),
+        (None, "cpu"),
+        (OSError("CUDA driver unavailable"), "cpu"),
+        (RuntimeError("CUDA initialization failed"), "cpu"),
+        (AssertionError("CUDA build unavailable"), "cpu"),
+    ],
+    ids=["cuda", "cpu", "no-torch", "driver-error", "runtime-error", "build-error"],
+)
+def test_stackup_processor_default_and_manual_selection_reach_all_actions(
+    qapp, monkeypatch, availability, expected_processor
+):
+    available = Mock(return_value=availability)
+    if isinstance(availability, Exception):
+        available.side_effect = availability
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        None if availability is None else SimpleNamespace(
+            cuda=SimpleNamespace(is_available=available)
+        ),
+    )
     calls = []
     config = StackupConfig(
         layers=[StackupLayer(file="layer.gbr", name="L1", thickness=0.1)]
@@ -55,13 +81,32 @@ def test_stackup_am_processor_selection_reaches_both_actions(qapp):
     )
     editor.setConfig(config, Path.cwd())
 
-    assert editor.processorCombo.currentData() == "cpu"
-    editor._onShowAMPlot()
-    editor.processorCombo.setCurrentIndex(editor.processorCombo.findData("cuda"))
-    editor._onSimulate()
-    editor._onShowAMVolume()
+    try:
+        assert editor.processorCombo.currentData() == expected_processor
+        assert calls == []
+        editor._onSimulate()
+        editor._onShowAMPlot()
+        editor._onShowAMVolume()
 
-    assert calls == [("plot", "cpu"), ("ct", "cuda"), ("volume", "cuda")]
+        manual_processor = "cpu" if expected_processor == "cuda" else "cuda"
+        editor.processorCombo.setCurrentIndex(
+            editor.processorCombo.findData(manual_processor)
+        )
+        editor.show()
+        editor.close()
+        editor.show()
+        assert editor.processorCombo.currentData() == manual_processor
+        editor._onSimulate()
+        editor._onShowAMPlot()
+        editor._onShowAMVolume()
+
+        assert calls == [
+            (action, processor)
+            for processor in (expected_processor, manual_processor)
+            for action in ("ct", "plot", "volume")
+        ]
+    finally:
+        editor.close()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DLL-order regression")

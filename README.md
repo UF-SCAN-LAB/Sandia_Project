@@ -70,6 +70,11 @@ and fidelity-metric calculation. The displayed total includes setup, transfers,
 reconstruction and metric calculation; it excludes prior Gerber voxelization
 and display rendering. The verbose JSON print calls are commented out.
 
+The Gerber stackup editor defaults to **GPU (CUDA)** when PyTorch reports an
+available CUDA device, and to **CPU** otherwise (including when optional
+PyTorch cannot load). You can change the processor manually; reopening the
+editor preserves your choice for the current session.
+
 GPU selection uses
 CUDA FFT filtering and a custom parallel backprojection kernel for CT and AM,
 including AM residual maps. AM LUT interpolation and regularization remain on
