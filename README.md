@@ -10,6 +10,7 @@ netlist-specific information.
 
 ## Documentation
 - [Architecture Overview](./xrayrecon/ARCHITECTURE.md)
+- [Error Inspection: linked maps, profiles, regions, and numerical exports](./xrayrecon/ERROR_INSPECTION.md)
 
 ## Installation
 Clone the repository and install the package and test dependencies in editable mode:

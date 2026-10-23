@@ -80,6 +80,26 @@ def find_circles(func: Callable, image=None):
     # PRJ_SINGLETON.imgProcClctn.addProcessCtor(findCirclesProcessor)
 
 
+class _ElidedStatusLabel(QtWidgets.QLabel):
+    """Keep long Gerber legends inside the available status-bar space."""
+
+    def __init__(self, text):
+        super().__init__(text)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+        self.setToolTip(text)
+
+    def setText(self, text):
+        super().setText(text)
+        self.setToolTip(text)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        text = self.fontMetrics().elidedText(self.text(), QtCore.Qt.ElideRight, self.contentsRect().width())
+        painter.drawText(self.contentsRect(), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+
+
 class MainWin(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -109,6 +129,7 @@ class MainWin(QtWidgets.QMainWindow):
         self._current_rgba_base_right: np.ndarray | None = None
         self._stackupEditor: StackupEditorWindow | None = None
         self._am_result: dict | None = None
+        self._analysis_dock_visibility = None
         self._showcase_am_volume_zhw2: np.ndarray | None = None
         self._showcase_material_labels_hwz: np.ndarray | None = None
         self._showcase_am_calibration_model = None
@@ -427,6 +448,8 @@ class MainWin(QtWidgets.QMainWindow):
         self.registrationPanel.sigCloseRequested.connect(self._showMainWorkspace)
         self.amAnalysisPanel = AMAnalysisPanel(parent=self)
         self.amAnalysisPanel.sigCloseRequested.connect(self._showMainWorkspace)
+        self.amAnalysisPanel.sigInspectRequested.connect(self.showErrorInspection)
+        self.errorInspectionPanel = None
         self._workspaceStack = QtWidgets.QStackedWidget()
         self._workspaceStack.setObjectName("MainWorkspaceStack")
         self._workspaceStack.addWidget(self._mainWorkspacePage)
@@ -491,8 +514,8 @@ class MainWin(QtWidgets.QMainWindow):
         self.pixelValueLabel = QtWidgets.QLabel("Pixel: —")
         self.statusBar().addWidget(self.cubeInfoLabel)
         self.statusBar().addWidget(self.pixelValueLabel)
-        self.gerberLegendLabel = QtWidgets.QLabel("Gerber 3D legend: none loaded")
-        self.statusBar().addPermanentWidget(self.gerberLegendLabel)
+        self.gerberLegendLabel = _ElidedStatusLabel("Gerber 3D legend: none loaded")
+        self.statusBar().addPermanentWidget(self.gerberLegendLabel, 1)
 
         self.model.sigCubeChanged.connect(self._updateStatusBar)
         self.model.sigCubeChanged.connect(self._resetLevelSliders)
@@ -776,7 +799,8 @@ class MainWin(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to load Gerber:\n{e}")
 
     def _voxelize_stackup(
-        self, config: StackupConfig, stackup_path: Path, return_material_ids: bool = False
+        self, config: StackupConfig, stackup_path: Path, return_material_ids: bool = False,
+        for_inspection: bool = False,
     ):
         """Rasterize + voxelize every layer in *config*.
 
@@ -791,10 +815,12 @@ class MainWin(QtWidgets.QMainWindow):
         """
         vol, layer_names, layer_slices, visual_entries, spacing_mm, material_ids = (
             voxelize_stackup_config(
-                config, stackup_path, return_material_ids=return_material_ids
+                config, stackup_path, return_material_ids=return_material_ids or for_inspection
             )
         )
         self._gerber_voxel_spacing_mm = spacing_mm
+        if for_inspection:
+            self._am_reference_labels_zhw = material_ids
         if return_material_ids:
             # Voxelizer returns (Z, H, W) -- move to (H, W, Z) to match every
             # other "_hwz"-suffixed Gerber array in this class.
@@ -947,8 +973,9 @@ class MainWin(QtWidgets.QMainWindow):
             # _simulateXrayFromEditor: this path never touches
             # `_apply_gerber_volume`/`_gerber_intensity_hwz`, so it must not
             # touch `_gerber_material_id_vol_hwz` either.
+            self._am_reference_labels_zhw = None
             vol, _layer_names, _layer_slices, _visual_entries = self._voxelize_stackup(
-                config, stackup_path
+                config, stackup_path, for_inspection=True
             )
             result = simulate_am_volume(
                 vol,
@@ -959,6 +986,8 @@ class MainWin(QtWidgets.QMainWindow):
                 voxel_spacing_mm=self._gerber_voxel_spacing_mm,
                 action_name=action_name,
             )
+            if self._am_reference_labels_zhw is not None:
+                result["material_labels_ground_truth"] = self._am_reference_labels_zhw
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -1200,7 +1229,10 @@ class MainWin(QtWidgets.QMainWindow):
             self.viewer_3d_right.setRGBADataCube(gt_rgba)
             self.viewer_3d_right.resetCamera()
 
-            self._am_result = simulate_am_volume(vol, action_name="Load Sophisticated PCB Demo (AM)")
+            self._am_result = simulate_am_volume(
+                vol, voxel_spacing_mm=spacing, reference_labels=material_ids_zhw,
+                action_name="Load Sophisticated PCB Demo (AM)",
+            )
             QtWidgets.QMessageBox.information(
                 self, "Sophisticated PCB Demo Loaded",
                 f"Voxelized: {vol.shape[:3]}  |  AM decomposition complete -- "
@@ -1306,16 +1338,54 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _showMainWorkspace(self):
         self.layerPanel.setVisible(True)
-        self._plotDock.setVisible(True)
+        for label in (self.cubeInfoLabel, self.pixelValueLabel, self.gerberLegendLabel):
+            label.setVisible(True)
+        if self._analysis_dock_visibility is not None:
+            for dock, visible in self._analysis_dock_visibility:
+                dock.setVisible(visible)
+            self._analysis_dock_visibility = None
+        else:
+            self._plotDock.setVisible(True)
         self._workspaceStack.setCurrentWidget(self._mainWorkspacePage)
         self.statusBar().showMessage("Main workspace active", 3000)
 
+    def showErrorInspection(self):
+        """Open connected numerical inspection for the current AM artifact."""
+        if self.amAnalysisPanel.result is None:
+            return
+        if self.errorInspectionPanel is None:
+            from .error_inspection import ErrorInspectionPanel
+
+            self.errorInspectionPanel = ErrorInspectionPanel(self)
+            self.errorInspectionPanel.sigCloseRequested.connect(self._showAMAnalysis)
+            self.errorInspectionPanel.sigVolumeRequested.connect(self._showMainWorkspace)
+            self._workspaceStack.addWidget(self.errorInspectionPanel)
+        self.errorInspectionPanel.setResult(self.amAnalysisPanel.result)
+        if self.errorInspectionPanel.state.plane == "XY":
+            self.errorInspectionPanel.sliceSlider.setValue(self.amAnalysisPanel.sliceSlider.value())
+        self._enterAnalysisWorkspace(self.errorInspectionPanel)
+        self.statusBar().showMessage("Error inspection: choose Probe, Line, or ROI to inspect numerical discrepancies", 5000)
+
     def _showAMAnalysis(self):
         """Give the embedded quantitative plots the available main canvas."""
-        self.layerPanel.setVisible(False)
-        self._plotDock.setVisible(False)
-        self._workspaceStack.setCurrentWidget(self.amAnalysisPanel)
+        self._enterAnalysisWorkspace(self.amAnalysisPanel)
         self.statusBar().showMessage("Quantitative AM workspace active", 3000)
+
+    def _enterAnalysisWorkspace(self, panel):
+        # Hide both viewer docks: a retained Tools dock can reserve a large
+        # strip beside either analysis page, even when its contents are empty.
+        # Capture once so switching Overview <-> Inspection preserves the user's
+        # original dock visibility, floating state, sizes, and docking positions.
+        if self._analysis_dock_visibility is None:
+            self._analysis_dock_visibility = [
+                (dock, not dock.isHidden()) for dock in (self._toolsDock, self._plotDock)
+            ]
+        self.layerPanel.setVisible(False)
+        self._toolsDock.setVisible(False)
+        self._plotDock.setVisible(False)
+        for label in (self.cubeInfoLabel, self.pixelValueLabel, self.gerberLegendLabel):
+            label.setVisible(False)
+        self._workspaceStack.setCurrentWidget(panel)
 
     def _onRegistrationAccepted(self, transform: RigidScaleTransform):
         QtWidgets.QMessageBox.information(
@@ -1473,6 +1543,8 @@ class MainWin(QtWidgets.QMainWindow):
             raw_result = simulate_am_volume(
                 self._showcase_am_volume_zhw2,
                 config=acquisition,
+                voxel_spacing_mm=self._gerber_voxel_spacing_mm,
+                reference_labels=np.moveaxis(self._showcase_material_labels_hwz, -1, 0),
                 action_name="Run Showcase Z-effective / Electron Density",
             )
             self._am_result = calibration.apply(raw_result)

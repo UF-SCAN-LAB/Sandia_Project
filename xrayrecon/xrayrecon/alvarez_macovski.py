@@ -22,6 +22,7 @@ genuine dual-energy-CT limitation, not a bug.
 from __future__ import annotations
 
 from time import perf_counter
+from uuid import uuid4
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, median_filter, sobel
@@ -67,6 +68,8 @@ class AMResult(dict):
         self.has_ground_truth = bool(has_ground_truth)
         self.run_metrics = getattr(args[0], "run_metrics", None) if args else None
         self.reconstruction_metrics = getattr(args[0], "reconstruction_metrics", {}) if args else {}
+        self.inspection_metadata = dict(getattr(args[0], "inspection_metadata", {})) if args else {}
+        self.inspection_metadata.setdefault("run_id", str(uuid4()))
 
 
 def f1(E):
@@ -659,6 +662,7 @@ def simulate_am_volume(
     backprojection_backend: str | None = None,
     sample_file: str | None = None,
     voxel_spacing_mm: tuple[float, float, float] | None = None,
+    reference_labels: np.ndarray | None = None,
     action_name: str | None = None,
 ) -> AMResult:
     """Simulate and reconstruct a property volume through the AM pipeline.
@@ -681,6 +685,9 @@ def simulate_am_volume(
     volume = np.asarray(vol)
     if volume.ndim != 4 or volume.shape[-1] != 2:
         raise ValueError("AM volume must have shape (Z, H, W, 2)")
+    if reference_labels is not None:
+        if np.shape(reference_labels) != volume.shape[:3] or not np.issubdtype(np.asarray(reference_labels).dtype, np.integer):
+            raise ValueError("Reference labels must be integer IDs on the input (Z,H,W) grid")
     z_depth, h, w, _ = volume.shape
     del z_depth
     if config is not None:
@@ -745,6 +752,9 @@ def simulate_am_volume(
         ).astype(np.float32),
     )
     result.has_ground_truth = True
+    result.inspection_metadata.update(spacing_hwz=voxel_spacing_mm)
+    if reference_labels is not None:
+        result["material_labels_ground_truth"] = np.asarray(reference_labels).copy()
     result.run_metrics = simulation_record(
         started, model="am", shape_zhw=zeff_gt.shape,
         num_angles=acquisition.num_angles, projection_backend=projection_backend,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import textwrap
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from matplotlib.ticker import ScalarFormatter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from ..materials import MATERIALS_DB, MATERIAL_COLORS
@@ -19,6 +22,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
     """
 
     sigCloseRequested = QtCore.Signal()
+    sigInspectRequested = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,30 +52,77 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         self.acquisitionSummary.setWordWrap(True)
         self.calibrationStatus = QtWidgets.QLabel("Uncalibrated")
         self.calibrationStatus.setWordWrap(True)
+        for combo in (self.modeCombo, self.qualityCombo):
+            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+            combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        for label in (self.metricSummary, self.acquisitionSummary, self.calibrationStatus):
+            label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+            label.setMinimumWidth(0)
+        # Slice-dependent text must not move the canvas as lines wrap differently.
+        self.metricSummary.setFixedHeight(self.fontMetrics().lineSpacing() * 3 + 4)
 
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(self.backBtn)
+        self.inspectBtn = QtWidgets.QPushButton("Error inspection…")
+        self.inspectBtn.setToolTip("Inspect reference errors with linked maps, selections, profiles, and numerical export")
+        self.inspectBtn.clicked.connect(self.sigInspectRequested)
+        controls.addWidget(self.inspectBtn)
         controls.addSpacing(12)
         controls.addWidget(QtWidgets.QLabel("Display:"))
         controls.addWidget(self.modeCombo)
         controls.addWidget(QtWidgets.QLabel("Quality map:"))
         controls.addWidget(self.qualityCombo)
-        controls.addSpacing(12)
-        controls.addWidget(self.sliceLabel)
-        controls.addWidget(self.sliceSlider, 1)
+        navigation = QtWidgets.QHBoxLayout()
+        self.sliceLabel.setMinimumWidth(self.sliceLabel.fontMetrics().horizontalAdvance("Slice 9999 of 9999"))
+        navigation.addWidget(self.sliceLabel)
+        navigation.addWidget(self.sliceSlider, 1)
 
         self.figure = Figure(figsize=(10, 7))
         self.canvas = FigureCanvasQTAgg(self.figure)
+        self.canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.canvas.setMinimumSize(0, 0)
+        self._createPlots()
 
         layout = QtWidgets.QVBoxLayout(self)
         title = QtWidgets.QLabel("Quantitative Alvarez–Macovski Analysis")
         title.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
         layout.addLayout(controls)
+        layout.addLayout(navigation)
         layout.addWidget(self.acquisitionSummary)
         layout.addWidget(self.calibrationStatus)
         layout.addWidget(self.metricSummary)
         layout.addWidget(self.canvas, 1)
+
+    def _createPlots(self):
+        """Allocate axes/colorbars once; data updates cannot renegotiate margins.
+
+        A divider fits each image and its colorbar inside a fixed grid cell on
+        resize. Unlike tight_layout on every slice, tick magnitudes and titles
+        cannot shift the grid, or progressively shrink it on repeated redraws.
+        """
+        self._axes = self.figure.subplots(2, 3)
+        self.figure.subplots_adjust(left=.025, right=.94, bottom=.05, top=.88,
+                                    wspace=.42, hspace=.30)
+        self._images, self._colorbars = [], []
+        for axis in self._axes.flat:
+            image = axis.imshow(np.zeros((1, 1)), origin="lower", vmin=0, vmax=1)
+            axis.set_xticks([])
+            axis.set_yticks([])
+            divider = make_axes_locatable(axis)
+            color_axis = divider.append_axes("right", size="4%", pad=.08)
+            formatter = ScalarFormatter(useOffset=False, useMathText=True)
+            formatter.set_powerlimits((-2, 3))
+            colorbar = self.figure.colorbar(image, cax=color_axis, format=formatter)
+            color_axis.tick_params(labelsize=8, pad=2)
+            color_axis.yaxis.get_offset_text().set_fontsize(8)
+            self._images.append(image)
+            self._colorbars.append(colorbar)
+        self.figure.suptitle(
+            "Raw results remain available for audit; confidence is not a probability.",
+            fontsize=9, y=.99,
+        )
 
     def setResult(self, result: dict) -> None:
         required = {
@@ -89,7 +140,14 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         if len(shape) != 3 or any(np.asarray(result[key]).shape != shape for key in required):
             raise ValueError("AM quantitative arrays must share a (Z, H, W) shape")
 
+        # Changing modes while replacing the result must not draw using the old
+        # slider index (which can be outside the new volume).
+        blockers = [QtCore.QSignalBlocker(widget) for widget in (self.modeCombo, self.qualityCombo)]
         self.result = result
+        self._reference_ranges = {
+            key: float(result[key].max()) - float(result[key].min())
+            for key in ("zeff_ground_truth", "rhoe_ground_truth") if key in result
+        }
         config = getattr(result, "acquisition_config", None)
         if config is None:
             self.acquisitionSummary.setText("Acquisition metadata unavailable")
@@ -147,6 +205,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         self.sliceSlider.setRange(0, shape[0] - 1)
         self.sliceSlider.setValue(representative)
         self.sliceSlider.blockSignals(False)
+        del blockers
         self._draw()
 
     def _draw(self, *_args) -> None:
@@ -198,12 +257,11 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             quality_label = "rho_e / rho_e,water"
         else:
             quality_image = residual
-            quality_title = "Projection residual"
+            quality_title = "Backprojected projection inconsistency"
             quality_label = "normalized mismatch"
         quality_max = max(float(np.percentile(quality_image, 99)), 1e-6)
 
-        self.figure.clear()
-        axes = self.figure.subplots(2, 3)
+        axes = self._axes
         zmax = max(
             float(np.max(zeff)),
             float(np.max(zeff_gt[index])) if zeff_gt is not None else 0.0,
@@ -225,7 +283,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
                 "Z-effective",
             ),
             (axes[0, 1], zeff, f"{mode_name} Z-effective", "plasma", 0.0, zmax, "Z-effective"),
-            (axes[0, 2], confidence, "Reconstruction confidence", "viridis", 0.0, 1.0, "0–1 quality indicator"),
+            (axes[0, 2], confidence, "Reconstruction quality indicator", "viridis", 0.0, 1.0, "0–1 quality indicator"),
             (
                 axes[1, 0],
                 rhoe_gt[index] if rhoe_gt is not None else rhoe,
@@ -238,18 +296,13 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             (axes[1, 1], rhoe, f"{mode_name} electron density", "cividis", 0.0, rmax, "rho_e / rho_e,water"),
             (axes[1, 2], quality_image, quality_title, "magma", 0.0, quality_max, quality_label),
         ]
-        for axis, image, title, cmap, vmin, vmax, label in panels:
-            artist = axis.imshow(image, cmap=cmap, origin="lower", vmin=vmin, vmax=vmax)
-            axis.set_title(title, fontsize=9)
-            axis.set_xticks([])
-            axis.set_yticks([])
-            self.figure.colorbar(artist, ax=axis, label=label, fraction=0.046, pad=0.04)
-
-        self.figure.suptitle(
-            "Raw results remain available for audit; confidence is not a probability.",
-            fontsize=10,
-        )
-        self.figure.tight_layout()
+        for (axis, image, title, cmap, vmin, vmax, label), artist, colorbar in zip(panels, self._images, self._colorbars):
+            artist.set_data(image)
+            artist.set_extent((-.5, image.shape[1] - .5, -.5, image.shape[0] - .5))
+            artist.set_cmap(cmap)
+            artist.set_clim(vmin, vmax)
+            axis.set_title(textwrap.fill(title, width=32), fontsize=9)
+            colorbar.set_label(label, fontsize=8, labelpad=3)
         self.canvas.draw_idle()
         self._update_metrics(index, z_key, r_key)
 
@@ -268,7 +321,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
             for name, reference, key in (("Z-effective", zeff_gt, z_key), ("Electron density", rhoe_gt, r_key)):
                 metrics = reconstruction_fidelity(
                     reference[index], result[key][index],
-                    data_range=float(reference.max()) - float(reference.min()),
+                    data_range=self._reference_ranges["zeff_ground_truth" if key == z_key else "rhoe_ground_truth"],
                 )
                 snr = "unavailable" if metrics["snr_db"] is None else f"{metrics['snr_db']:.2f} dB"
                 ssi = "unavailable" if metrics["ssi"] is None else f"{metrics['ssi']:.4f}"
@@ -311,6 +364,7 @@ class AMAnalysisPanel(QtWidgets.QWidget):
         else:
             summary += "SNR and SSI unavailable: no ground-truth reference."
         self.metricSummary.setText(summary)
+        self.metricSummary.setToolTip(summary)
 
 
 class AMPlotWindow(QtWidgets.QDialog):

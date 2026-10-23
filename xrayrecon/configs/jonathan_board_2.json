@@ -1,0 +1,191 @@
+{
+  "layers": [
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_1.gbr",
+      "name": "666666_Copper_Signal_1",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_2.gbr",
+      "name": "666666_Copper_Signal_2",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_3.gbr",
+      "name": "666666_Copper_Signal_3",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_4.gbr",
+      "name": "666666_Copper_Signal_4",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_Bot.gbr",
+      "name": "666666_Copper_Signal_Bot",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Copper_Signal_Top.gbr",
+      "name": "666666_Copper_Signal_Top",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Legend_Bot.gbr",
+      "name": "666666_Legend_Bot",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Legend_Top.gbr",
+      "name": "666666_Legend_Top",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Paste_Bot.gbr",
+      "name": "666666_Paste_Bot",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Paste_Top.gbr",
+      "name": "666666_Paste_Top",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Profile.gbr",
+      "name": "666666_Profile",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Soldermask_Bot.gbr",
+      "name": "666666_Soldermask_Bot",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    },
+    {
+      "file": "C:\\Users\\whisk\\Downloads\\Sandia x-ray project\\PCBCT-seg\\picture-9\\666666_Soldermask_Top.gbr",
+      "name": "666666_Soldermask_Top",
+      "thickness": 0.035,
+      "gap": 0.1,
+      "feature_material": "COPPER",
+      "background_material": "AIR",
+      "color": [
+        255,
+        140,
+        0,
+        200
+      ]
+    }
+  ],
+  "dpi": 300,
+  "resolution_xy": 0.1,
+  "resolution_z": 0.01,
+  "substrate_material": "FR4",
+  "default_gap_slices": 20
+}

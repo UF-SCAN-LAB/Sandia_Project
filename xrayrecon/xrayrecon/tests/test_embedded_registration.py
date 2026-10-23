@@ -259,7 +259,9 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
     expected_shape = win._showcase_am_volume_zhw2.shape[:3]
     called = {}
 
-    def fake_decomposition(volume, *, config, action_name):
+    def fake_decomposition(volume, *, config, action_name, voxel_spacing_mm, reference_labels):
+        assert voxel_spacing_mm == win._gerber_voxel_spacing_mm
+        np.testing.assert_array_equal(reference_labels, np.moveaxis(win._showcase_material_labels_hwz, -1, 0))
         called["shape"] = volume.shape
         called["angles"] = config.num_angles
         called["action_name"] = action_name
@@ -330,6 +332,13 @@ def test_showcase_am_action_populates_all_visualization_modes(qapp, monkeypatch)
     assert win._plotDock.isHidden()
     assert win._current_rgba_base_left.shape == (96, 128, 24, 4)
     assert any(title == "Showcase AM Decomposition Complete" for title, _ in seen)
+
+    win.amAnalysisPanel.inspectBtn.click()
+    assert win._workspaceStack.currentWidget() is win.errorInspectionPanel
+    assert win.errorInspectionPanel.context.grid.shape == expected_shape
+    win.errorInspectionPanel.backBtn.click()
+    assert win._workspaceStack.currentWidget() is win.amAnalysisPanel
+    win.errorInspectionPanel.cancel()
 
     win.amColorRhoeBtn.click()
     assert win._current_rgba_base_left.shape == (96, 128, 24, 4)

@@ -108,6 +108,12 @@ The central hub of the application. It:
   bounded confidence indicator. `gui.am_plot_window.AMAnalysisPanel` presents
   these results in the main workspace. Confidence is a quality indicator, not
   a probability, and never hides the raw inversion.
+- `gui.error_inspection.ErrorInspectionPanel` opens from the AM overview and
+  coordinates linked maps, physical selections, and the existing GL renderer.
+  `error_inspection` is the shared pure numerical layer for UI, batch metrics,
+  and lossless exports. AM artifacts preserve a run ID, physical spacing when
+  supplied, and explicit reference material IDs through calibration. See
+  [Error Inspection](./ERROR_INSPECTION.md) for conventions and limitations.
 - `am_acquisition.AMAcquisitionConfig` owns spectra, angular sampling, pixel
   size, noise assumptions, LUT bounds, calibration ID, and simulated/measured
   provenance. `PairedProjectionData` is the validated boundary for low/high
